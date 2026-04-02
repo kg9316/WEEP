@@ -97,4 +97,4 @@ Endpoints:
 - ESP32 port
 - Pub/Sub on points
 - Niagara WEEP service (Fox service clone)
-- Niagra WEEP Network (Niagara Network clone)
+- Niagara WEEP Network (Niagara Network clone)
