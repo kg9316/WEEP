@@ -1,5 +1,7 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
+using Weep.Discovery;
 using Weep.Server.Auth;
 
 namespace Weep.Server;
@@ -27,8 +29,11 @@ public sealed class WeepServerHttpListener
 {
     public UserStore UserStore   { get; } = new();
     public bool      RequireAuth { get; set; } = true;
+    public bool      EnableMdnsDiscovery { get; set; } = true;
+    public string?   DiscoveryInstanceName { get; set; }
 
     private HttpListener? _listener;
+    private WeepMdnsAdvertiser? _mdnsAdvertiser;
 
     // ------------------------------------------------------------------
     // Start
@@ -53,18 +58,46 @@ public sealed class WeepServerHttpListener
 
         Console.WriteLine($"[weep] HttpListener listening on {prefix}  (auth={RequireAuth})");
 
-        while (!ct.IsCancellationRequested)
+        if (EnableMdnsDiscovery)
         {
-            HttpListenerContext ctx;
-            try   { ctx = await _listener.GetContextAsync(); }
-            catch (HttpListenerException) { break; }
+            var uri = new Uri(prefix);
+            var instanceName = DiscoveryInstanceName
+                ?? $"{Environment.MachineName}-weep";
+            _mdnsAdvertiser = new WeepMdnsAdvertiser(
+                instanceName,
+                uri.Port,
+                path: "/weep",
+                version: "1.2",
+                authMechanisms: ["auth:scram-sha256"]);
+            _mdnsAdvertiser.Start();
+            Console.WriteLine($"[weep] mDNS advertised as '{instanceName}._weep._tcp.local'");
+        }
 
-            // Each connection runs on its own Task so the accept loop stays free.
-            _ = Task.Run(() => HandleClientAsync(ctx, ct), ct);
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                HttpListenerContext ctx;
+                try   { ctx = await _listener.GetContextAsync(); }
+                catch (HttpListenerException) { break; }
+
+                // Each connection runs on its own Task so the accept loop stays free.
+                _ = Task.Run(() => HandleClientAsync(ctx, ct), ct);
+            }
+        }
+        finally
+        {
+            _mdnsAdvertiser?.Dispose();
+            _mdnsAdvertiser = null;
         }
     }
 
-    public void Stop() => _listener?.Stop();
+    public void Stop()
+    {
+        _mdnsAdvertiser?.Dispose();
+        _mdnsAdvertiser = null;
+        _listener?.Stop();
+    }
 
     // ------------------------------------------------------------------
     // Per-connection handling
@@ -79,6 +112,30 @@ public sealed class WeepServerHttpListener
         // Plain HTTP — serve the JS web UI on GET /weep
         if (!ctx.Request.IsWebSocketRequest)
         {
+            if (ctx.Request.HttpMethod == "GET" && reqPath == "/discover")
+            {
+                var services = await Weep.Client.WeepClient.DiscoverServersAsync(TimeSpan.FromSeconds(1.5), ct);
+                var payload = services.Select(s => new
+                {
+                    instanceName = s.InstanceName,
+                    hostName = s.HostName,
+                    port = s.Port,
+                    path = s.Path,
+                    version = s.Version,
+                    authMechanisms = s.AuthMechanisms,
+                    addresses = s.Addresses,
+                    wsUrl = s.BuildWebSocketUrl(),
+                });
+
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
+                ctx.Response.ContentType = "application/json; charset=utf-8";
+                ctx.Response.ContentLength64 = bytes.Length;
+                ctx.Response.AddHeader("Cache-Control", "no-cache");
+                await ctx.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length, ct);
+                ctx.Response.Close();
+                return;
+            }
+
             if (ctx.Request.HttpMethod == "GET" && isWeep)
             {
                 var htmlFile = Path.Combine(

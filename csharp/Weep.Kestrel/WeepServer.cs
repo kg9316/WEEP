@@ -2,6 +2,8 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Text;
+using System.Text.Json;
+using Weep.Discovery;
 using Weep.Server.Auth;
 
 namespace Weep.Server;
@@ -22,8 +24,11 @@ public sealed class WeepServer
 {
     public UserStore UserStore   { get; } = new();
     public bool      RequireAuth { get; set; } = true;
+    public bool      EnableMdnsDiscovery { get; set; } = true;
+    public string?   DiscoveryInstanceName { get; set; }
 
     private WebApplication? _app;
+    private WeepMdnsAdvertiser? _mdnsAdvertiser;
 
     // ------------------------------------------------------------------
     // Start
@@ -66,6 +71,27 @@ public sealed class WeepServer
             await ctx.Response.Body.WriteAsync(bytes, ct);
         });
 
+        _app.MapGet("/discover", async ctx =>
+        {
+            var services = await Weep.Client.WeepClient.DiscoverServersAsync(TimeSpan.FromSeconds(1.5), ct);
+            var payload = services.Select(s => new
+            {
+                instanceName = s.InstanceName,
+                hostName = s.HostName,
+                port = s.Port,
+                path = s.Path,
+                version = s.Version,
+                authMechanisms = s.AuthMechanisms,
+                addresses = s.Addresses,
+                wsUrl = s.BuildWebSocketUrl(),
+            });
+
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
+            ctx.Response.ContentType = "application/json; charset=utf-8";
+            ctx.Response.Headers["Cache-Control"] = "no-cache";
+            await ctx.Response.Body.WriteAsync(bytes, ct);
+        });
+
         // WEEP WebSocket endpoint at /weep
         _app.Map("/weep", async ctx =>
         {
@@ -99,8 +125,36 @@ public sealed class WeepServer
         Console.WriteLine($"[weep] Web UI:    {url}/");
         Console.WriteLine($"[weep] Endpoint:  {url}/weep");
 
-        await _app.RunAsync(ct);
+        if (EnableMdnsDiscovery)
+        {
+            var uri = new Uri(url);
+            var instanceName = DiscoveryInstanceName
+                ?? $"{Environment.MachineName}-weep";
+            _mdnsAdvertiser = new WeepMdnsAdvertiser(
+                instanceName,
+                uri.Port,
+                path: "/weep",
+                version: "1.2",
+                authMechanisms: ["auth:scram-sha256"]);
+            _mdnsAdvertiser.Start();
+            Console.WriteLine($"[weep] mDNS advertised as '{instanceName}._weep._tcp.local'");
+        }
+
+        try
+        {
+            await _app.RunAsync(ct);
+        }
+        finally
+        {
+            _mdnsAdvertiser?.Dispose();
+            _mdnsAdvertiser = null;
+        }
     }
 
-    public void Stop() => _app?.StopAsync().GetAwaiter().GetResult();
+    public void Stop()
+    {
+        _mdnsAdvertiser?.Dispose();
+        _mdnsAdvertiser = null;
+        _app?.StopAsync().GetAwaiter().GetResult();
+    }
 }

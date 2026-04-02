@@ -47,7 +47,11 @@
   input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
           color: var(--text); padding: 8px 10px; font-size: 13px; outline: none;
           transition: border-color .2s; }
+    select { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+       color: var(--text); padding: 8px 10px; font-size: 13px; outline: none;
+       transition: border-color .2s; }
   input:focus { border-color: var(--accent); }
+    select:focus { border-color: var(--accent); }
   input[type=password] { letter-spacing: 2px; }
   .btn { padding: 9px 16px; border-radius: 7px; border: none; cursor: pointer;
          font-size: 13px; font-weight: 600; transition: opacity .15s, transform .1s; }
@@ -60,6 +64,10 @@
   .btn-red      { background: var(--red);   color: #0f1117; }
   .btn-upload   { background: var(--accent2); color: #0f1117; }
   .divider { height: 1px; background: var(--border); }
+  .discovery-row { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; }
+  .discovery-select { flex: 1; min-width: 0; width: 100%; }
+  .discovery-select option { font-family: 'Cascadia Code', 'Fira Code', monospace; }
+  #btn-discover { flex-shrink: 0; }
 
   /* ── log panel ───────────────────────────────────────────────── */
   .log-panel { flex: 1; overflow-y: auto; background: var(--bg);
@@ -163,6 +171,16 @@
     <div class="field">
       <label>Server URL</label>
       <input id="url" value="" />
+    </div>
+    <div class="field">
+      <label>Discovered Servers</label>
+      <div class="discovery-row">
+        <select id="discovered-servers" class="discovery-select">
+          <option value="">No discovery results yet</option>
+        </select>
+        <button class="btn btn-outline btn-sm" id="btn-discover">Find</button>
+      </div>
+      <div id="discovery-status" style="margin-top:6px;font-size:12px;color:var(--muted);">Discovery not run yet</div>
     </div>
     <div class="field">
       <label>Username</label>
@@ -794,12 +812,95 @@ const queryChannelId= document.getElementById('query-channel-id');
 const btnRunQuery  = document.getElementById('btn-run-query');
 const queryInput   = document.getElementById('query-input');
 const queryResult  = document.getElementById('query-result');
+const btnDiscover  = document.getElementById('btn-discover');
+const discoveredServers = document.getElementById('discovered-servers');
+const discoveryStatus = document.getElementById('discovery-status');
+const urlInput     = document.getElementById('url');
 
 // Default WebSocket URL tracks where the UI is hosted.
 (() => {
   const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  document.getElementById('url').value = `${wsScheme}://${window.location.host}/weep`;
+  urlInput.value = `${wsScheme}://${window.location.host}/weep`;
 })();
+
+function rankAddress(addr) {
+  if (!addr) return 999;
+  if (addr === '127.0.0.1' || addr === '::1') return 0;
+  if (/^192\.168\./.test(addr)) return 1;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(addr)) return 2;
+  if (/^10\./.test(addr)) return 3;
+  if (/^169\.254\./.test(addr)) return 50;
+  if (/^fe80:/i.test(addr)) return 20;
+  return 10;
+}
+
+function pickPreferredAddress(addresses) {
+  if (!Array.isArray(addresses) || addresses.length === 0) return null;
+  const uniq = [...new Set(addresses.filter(Boolean))];
+  uniq.sort((a, b) => rankAddress(a) - rankAddress(b));
+  return uniq[0] || null;
+}
+
+async function refreshDiscoveredServers() {
+  btnDiscover.disabled = true;
+  discoveryStatus.textContent = 'Discovering...';
+  try {
+    const res = await fetch('/discover', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const list = await res.json();
+    const now = new Date().toLocaleTimeString();
+
+    discoveredServers.innerHTML = '';
+    if (!Array.isArray(list) || list.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No WEEP services discovered';
+      discoveredServers.appendChild(opt);
+      discoveryStatus.textContent = `Found 0 services at ${now}`;
+      log('Discovery: no services found', 'inf');
+      return;
+    }
+
+    for (const item of list) {
+      const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const pageHost = window.location.hostname;
+      const preferredAddr = pickPreferredAddress(item.addresses || []);
+      const host = (pageHost === 'localhost' || pageHost === '127.0.0.1')
+        ? pageHost
+        : (preferredAddr || item.hostName || pageHost);
+      const wsUrl = `${wsScheme}://${host}:${item.port}${item.path || '/weep'}`;
+      const instance = (item.instanceName || 'weep').replace('._weep._tcp.local', '');
+      const label = `${instance} (${host}:${item.port})`;
+      const opt = document.createElement('option');
+      opt.value = wsUrl;
+      opt.textContent = label;
+      opt.title = wsUrl;
+      discoveredServers.appendChild(opt);
+    }
+
+    if (discoveredServers.value) {
+      urlInput.value = discoveredServers.value;
+    }
+    discoveryStatus.textContent = `Found ${list.length} service(s) at ${now}`;
+    log(`Discovery: found ${list.length} service(s)`, 'ok');
+  } catch (err) {
+    discoveryStatus.textContent = `Discovery failed at ${new Date().toLocaleTimeString()}`;
+    log(`Discovery failed: ${err.message}`, 'err');
+    showToast(`Discovery failed: ${err.message}`, 'err');
+  } finally {
+    btnDiscover.disabled = false;
+  }
+}
+
+discoveredServers.addEventListener('change', () => {
+  if (discoveredServers.value) {
+    urlInput.value = discoveredServers.value;
+  }
+});
+
+btnDiscover.addEventListener('click', async () => {
+  await refreshDiscoveredServers();
+});
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 function log(msg, cls = '') {
@@ -1026,7 +1127,7 @@ btnRunQuery.addEventListener('click', async () => {
 
 // ── Connect / Disconnect ──────────────────────────────────────────────────────
 btnConnect.addEventListener('click', async () => {
-  const url       = document.getElementById('url').value.trim();
+  const url       = urlInput.value.trim();
   const user      = document.getElementById('user').value.trim();
   const pass      = document.getElementById('pass').value;
   const mechSel   = document.getElementById('mechanism').value;
@@ -1079,6 +1180,9 @@ btnConnect.addEventListener('click', async () => {
     btnConnect.disabled = false;
   }
 });
+
+// Kick off an initial discovery attempt for convenience.
+refreshDiscoveredServers();
 
 btnDisconnect.addEventListener('click', () => {
   client?.disconnect();

@@ -28,7 +28,8 @@ Version 1.2 — April 2026
 12. [Planned Profiles](#12-planned-profiles)
 13. [Error Handling](#13-error-handling)
 14. [Implementation Checklist](#14-implementation-checklist)
-15. [Differences from BEEP (RFC 3080)](#15-differences-from-beep-rfc-3080)
+15. [Arduino and ESP32 Implementation Notes](#15-arduino-and-esp32-implementation-notes)
+16. [Differences from BEEP (RFC 3080)](#16-differences-from-beep-rfc-3080)
 
 ---
 
@@ -1721,7 +1722,69 @@ Use this list to verify a new implementation.
 
 ---
 
-## 15. Differences from BEEP (RFC 3080)
+## 15. Arduino and ESP32 Implementation Notes
+
+Short answer: yes, WEEP is practical on ESP32 and Arduino-class boards.
+
+### 15.1 Supported deployment patterns
+
+| Pattern | Recommended for | Notes |
+|---------|------------------|-------|
+| ESP32 as WEEP client | Sensors and field devices | Connects to C# or Python WEEP server over `ws://` or `wss://` |
+| ESP32 as small WEEP server | Small LAN deployments | Keep channel/profile set minimal to control RAM usage |
+| Browser UI + MCU backend | Human operator tools | Browser cannot do mDNS directly; keep `/discover` HTTP endpoint on server/gateway |
+
+### 15.2 Discovery on ESP32 (mDNS/DNS-SD)
+
+Use service type `_weep._tcp.local` and advertise these TXT records:
+
+- `path=/weep`
+- `version=1.2`
+- `auth=auth:scram-sha256`
+
+For ESP-IDF, typical APIs are:
+
+- `mdns_init()`
+- `mdns_hostname_set()`
+- `mdns_instance_name_set()`
+- `mdns_service_add("<instance>", "_weep", "_tcp", port, txt, txt_count)`
+
+For discovery, query `_weep._tcp.local` and build connect URLs from SRV + A/AAAA + TXT data. If multiple addresses are present, prefer in this order:
+
+1. `127.0.0.1` or `::1` (local testing only)
+2. `192.168.x.x`
+3. `172.16.x.x` to `172.31.x.x`
+4. `10.x.x.x`
+5. global IPv6
+6. link-local (`169.254.x.x`, `fe80::/10`) as last resort
+
+### 15.3 Security and crypto on MCU
+
+- SCRAM flow is supported on ESP32 via mbedTLS (PBKDF2 + HMAC-SHA256).
+- Use constant-time digest compare for `clientProof` validation.
+- Store `passwordKey` (derived key) rather than plain password to avoid PBKDF2 on every login.
+- Prefer `wss://` in production; use plain `ws://` only on trusted local networks.
+
+### 15.4 Resource budgeting guidance
+
+- Keep binary chunk size at 4096 to 16384 bytes on constrained devices.
+- Keep the sliding window at `W=8` unless profiling shows memory pressure.
+- Use fixed-size buffers and avoid dynamic allocations inside the send loop.
+- Limit simultaneously open channels on MCU targets (for example: auth + one file or stream channel).
+
+### 15.5 Arduino practical note
+
+Arduino-class boards can interoperate if they have:
+
+- a WebSocket client/server library with binary frame access,
+- SHA-256/HMAC/PBKDF2 capability, and
+- enough RAM for channel state plus in-flight frame buffers.
+
+For non-ESP Arduino targets, running as a WEEP client is usually easier than hosting a multi-channel WEEP server.
+
+---
+
+## 16. Differences from BEEP (RFC 3080)
 
 ### Historical context
 

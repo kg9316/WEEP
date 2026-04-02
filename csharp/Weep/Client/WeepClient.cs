@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json.Nodes;
+using Weep.Discovery;
 using Weep.Protocol;
 
 namespace Weep.Client;
@@ -35,6 +36,14 @@ public sealed class WeepClient : IAsyncDisposable
     public bool IsConnected      => _ws.State == WebSocketState.Open;
     /// <summary>Server's hard maximum chunk size, parsed from the greeting.</summary>
     public int  ServerMaxChunkSize { get; private set; } = 65_536;
+
+    /// <summary>
+    /// Discovers WEEP servers on the local link via mDNS + DNS-SD (_weep._tcp.local).
+    /// </summary>
+    public static Task<IReadOnlyList<DiscoveredWeepService>> DiscoverServersAsync(
+        TimeSpan? timeout = null,
+        CancellationToken ct = default) =>
+        WeepMdnsBrowser.DiscoverAsync(timeout, ct);
 
     // ------------------------------------------------------------------
     // Connect / Disconnect

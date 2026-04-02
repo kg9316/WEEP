@@ -20,6 +20,7 @@ from .protocol import (
     encode_data_frame,
     parse_binary_frame,
 )
+from .discovery import DiscoveredWeepService, discover_services
 
 
 class SendWindow:
@@ -49,6 +50,10 @@ class WeepClient:
     @property
     def greeting(self) -> dict | None:
         return self._greeting
+
+    @staticmethod
+    async def discover_servers(timeout: float = 2.0) -> list[DiscoveredWeepService]:
+        return await discover_services(timeout=timeout)
 
     async def connect(self, url: str) -> None:
         self._ws = await websockets.connect(url, max_size=2**24)

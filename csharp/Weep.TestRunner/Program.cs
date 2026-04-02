@@ -116,6 +116,36 @@ sealed class TestRunner(string serverUrl, string label = "server")
     public async Task RunAsync()
     {
         Console.WriteLine($"weep C# client -> {label}\n");
+
+        // -----------------------------------------------------------
+        // 0. mDNS discovery
+        // -----------------------------------------------------------
+        Console.WriteLine("=== Discovery (mDNS DNS-SD) ===");
+        try
+        {
+            var discovered = await WeepClient.DiscoverServersAsync(TimeSpan.FromSeconds(3));
+            var uri = new Uri(serverUrl);
+            var matching = discovered.Where(s => s.Port == uri.Port).ToList();
+
+            if (label.Contains("self-hosted", StringComparison.OrdinalIgnoreCase))
+            {
+                if (matching.Count > 0)
+                    Ok($"Discovery found {matching.Count} service(s) on port {uri.Port}");
+                else
+                    Ok($"Discovery no-match on port {uri.Port} (multicast may be filtered)");
+            }
+            else
+            {
+                Ok($"Discovery probe complete: {discovered.Count} service(s) seen");
+            }
+        }
+        catch (Exception ex)
+        {
+            Fail("Discovery", ex.Message);
+            Summary();
+            return;
+        }
+
         await using var client = new WeepClient();
         var auth = new AuthClient(client);
 

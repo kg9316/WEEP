@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import os
 import mimetypes
 import secrets
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ import websockets
 from websockets.legacy.server import WebSocketServerProtocol
 
 from .auth import ServerAuthHandler, UserStore
+from .discovery import WeepMdnsAdvertiser, discover_services
 from .protocol import (
     PROFILE_FILE,
     PROFILE_INVOKE,
@@ -542,10 +544,13 @@ class WeepServer:
         self.port = port
         self.require_auth = require_auth
         self.files_dir = Path(files_dir)
+        self.enable_mdns_discovery = True
+        self.discovery_instance_name: str | None = None
         self.user_store = UserStore()
         self.user_store.add_user("admin", "admin", "admin", "read", "write")
         self.user_store.add_user("guest", "guest", "read")
         self._server = None
+        self._mdns_advertiser: WeepMdnsAdvertiser | None = None
 
     async def start(self) -> None:
         self.files_dir.mkdir(parents=True, exist_ok=True)
@@ -560,6 +565,14 @@ class WeepServer:
                         ("Cache-Control", "no-cache"),
                     ], body
                 return 404, [("Content-Type", "text/plain")], b"index.html not found"
+
+            if path == "/discover":
+                discovered = await discover_services(timeout=1.5)
+                body = json.dumps([d.to_dict() for d in discovered]).encode("utf-8")
+                return 200, [
+                    ("Content-Type", "application/json; charset=utf-8"),
+                    ("Cache-Control", "no-cache"),
+                ], body
 
             if path == "/weep":
                 # Friendly hint for users who open /weep directly in a browser tab.
@@ -588,7 +601,22 @@ class WeepServer:
             max_size=2**24,
         )
 
+        if self.enable_mdns_discovery:
+            instance_name = self.discovery_instance_name or f"{os.getenv('COMPUTERNAME', os.getenv('HOSTNAME', 'python'))}-weep"
+            self._mdns_advertiser = WeepMdnsAdvertiser(
+                instance_name,
+                self.port,
+                path="/weep",
+                version="1.2",
+                auth_mechanisms=["auth:scram-sha256"],
+            )
+            await self._mdns_advertiser.start_async()
+            print(f"[weep-py] mDNS advertised as '{instance_name}._weep._tcp.local'")
+
     async def stop(self) -> None:
+        if self._mdns_advertiser is not None:
+            await self._mdns_advertiser.stop_async()
+            self._mdns_advertiser = None
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()

@@ -5,4 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Weep</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Makaretu.Dns.Multicast" Version="0.27.0" />
+  </ItemGroup>
 </Project>
