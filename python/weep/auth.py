@@ -7,18 +7,25 @@ from dataclasses import dataclass
 @dataclass
 class User:
     username: str
-    password_hash: str
+    password_salt: str
+    password_iterations: int
+    password_key: str
     roles: list[str]
 
 
 class UserStore:
+    DEFAULT_ITERATIONS = 120_000
+
     def __init__(self) -> None:
         self._users: dict[str, User] = {}
 
     def add_user(self, username: str, password: str, *roles: str) -> None:
+        salt, iterations, key = self.hash_password(password)
         self._users[username] = User(
             username=username,
-            password_hash=self.hash_password(password),
+            password_salt=salt,
+            password_iterations=iterations,
+            password_key=key,
             roles=list(roles) if roles else ["read"],
         )
 
@@ -26,64 +33,30 @@ class UserStore:
         return self._users.get(username)
 
     @staticmethod
-    def hash_password(password: str) -> str:
-        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    def hash_password(password: str) -> tuple[str, int, str]:
+        salt = secrets.token_hex(16)
+        iterations = UserStore.DEFAULT_ITERATIONS
+        key = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            bytes.fromhex(salt),
+            iterations,
+            dklen=32,
+        ).hex()
+        return salt, iterations, key
 
 
 class ServerAuthHandler:
     def __init__(self, store: UserStore, server_nonce: str) -> None:
         self._store = store
         self._server_nonce = server_nonce
-        self._pending_challenges: dict[str, str] = {}
         self._pending_scram: dict[str, tuple[str, str]] = {}
-
-    @staticmethod
-    def _sha256_hex(value: str) -> str:
-        return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     async def handle(self, payload: dict, msgno: int) -> tuple[dict | None, str | None]:
         mechanism = payload.get("mechanism", "")
-        if mechanism == "auth:challenge":
-            return await self._challenge(payload, msgno)
         if mechanism == "auth:scram-sha256":
             return await self._scram(payload, msgno)
         return None, "unsupported"
-
-    async def _challenge(self, payload: dict, msgno: int) -> tuple[dict | None, str | None]:
-        username = str(payload.get("username", ""))
-        response = payload.get("response")
-        if not username:
-            return None, "username required"
-
-        if response is None:
-            nonce = secrets.token_hex(16)
-            self._pending_challenges[username] = nonce
-            return {
-                "type": "RPY",
-                "channel": 0,
-                "msgno": msgno,
-                "payload": {"challenge": nonce},
-            }, None
-
-        stored = self._pending_challenges.pop(username, None)
-        user = self._store.get_user(username)
-        if stored is None or user is None:
-            return None, "Invalid credentials"
-
-        expected = self._sha256_hex(f"{username}:{stored}:{user.password_hash}")
-        if not hmac.compare_digest(expected, str(response)):
-            return None, "Invalid credentials"
-
-        return {
-            "type": "RPY",
-            "channel": 0,
-            "msgno": msgno,
-            "payload": {
-                "ok": True,
-                "username": user.username,
-                "roles": user.roles,
-            },
-        }, user.username
 
     async def _scram(self, payload: dict, msgno: int) -> tuple[dict | None, str | None]:
         username = str(payload.get("username", ""))
@@ -100,8 +73,16 @@ class ServerAuthHandler:
             if user is None:
                 return None, "Invalid credentials"
             combined_nonce = self._server_nonce + str(client_nonce)
-            shared_key = self._sha256_hex(f"{user.password_hash}:{combined_nonce}")
-            server_proof = self._sha256_hex(f"server:{shared_key}")
+            shared_key = hmac.new(
+                bytes.fromhex(user.password_key),
+                combined_nonce.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            server_proof = hmac.new(
+                bytes.fromhex(shared_key),
+                f"server:{combined_nonce}".encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
             self._pending_scram[username] = (combined_nonce, shared_key)
             return {
                 "type": "RPY",
@@ -110,6 +91,8 @@ class ServerAuthHandler:
                 "payload": {
                     "combinedNonce": combined_nonce,
                     "serverProof": server_proof,
+                    "salt": user.password_salt,
+                    "iterations": user.password_iterations,
                 },
             }, None
 
@@ -118,8 +101,12 @@ class ServerAuthHandler:
         if state is None or user is None:
             return None, "Invalid credentials"
 
-        _combined_nonce, shared_key = state
-        expected = self._sha256_hex(f"client:{shared_key}")
+        combined_nonce, shared_key = state
+        expected = hmac.new(
+            bytes.fromhex(shared_key),
+            f"client:{combined_nonce}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
         if not hmac.compare_digest(expected, str(client_proof)):
             return None, "Invalid credentials"
 

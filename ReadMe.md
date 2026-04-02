@@ -6,7 +6,7 @@ Version 1.2 — April 2026
 
 | Version | Date | Change |
 |---------|------|--------|
-| 1.2 | April 2026 | `auth:scram-sha256` mutual auth; `clientInfo` / device allowlist; both mechanisms coexist |
+| 1.2 | April 2026 | `auth:scram-sha256` mutual auth (PBKDF2 + HMAC), `clientInfo` / device allowlist, SCRAM-only auth advertisement |
 | 1.1 | April 2026 | Chunk-size negotiation; `preferredChunkSize` in `start`; server-advertised `maxChunkSize` |
 | 1.0 | March 2026 | Initial release |
 
@@ -19,7 +19,7 @@ Version 1.2 — April 2026
 3. [Channel Model](#3-channel-model)
 4. [JSON Message Envelope](#4-json-message-envelope)
 5. [Connection Lifecycle](#5-connection-lifecycle)
-6. [Authentication](#6-authentication) — `auth:challenge` (legacy) + `auth:scram-sha256` (mutual), device identity, allowlist
+6. [Authentication](#6-authentication) — `auth:scram-sha256` (PBKDF2 + HMAC), device identity, allowlist
 7. [Binary Frame Format](#7-binary-frame-format)
 8. [Send Priority Queue](#8-send-priority-queue)
 9. [Flow Control — Sliding Window ACK](#9-flow-control--sliding-window-ack)
@@ -397,7 +397,7 @@ because both sides use the same `msgno` space but on different channels.
   "payload": {
     "profiles": ["weep:file","weep:stream","weep:read","weep:write",
                  "weep:sub","weep:pub","weep:invoke","weep:query"],
-    "auth":       ["auth:challenge", "auth:scram-sha256"],
+    "auth":       ["auth:scram-sha256"],
     "version":    "1.2",
     "productName":"weep",
     "maxChunkSize": 65536,
@@ -487,8 +487,7 @@ Client                                          Server
   │                                               │
   │  ◄── greeting (channel=0, msgno=0) ───────────│
   │       payload: { profiles:[…],                 │
-  │                  auth:["auth:challenge",         │
-  │                        "auth:scram-sha256"],    │
+  │                  auth:["auth:scram-sha256"],    │
   │                  serverInfo:{brand,model,fw},  │
   │                  serverNonce:"<32-hex>" }       │
   │                                               │
@@ -553,14 +552,15 @@ Client                                          Server
 
 ### 6.1 Overview
 
-WEEP supports **two authentication mechanisms** that can coexist on the same
-server. The server advertises which it supports in the greeting `auth` array;
-the client picks one for each connection.
+WEEP uses a single authentication mechanism: `auth:scram-sha256`.
+The greeting `auth` array contains exactly:
 
-| Mechanism | Security level | Use case |
-|-----------|---------------|----------|
-| `auth:challenge` | ★★★☆ — server-issued nonce; password never on wire | Legacy clients; simple MCU implementations |
-| `auth:scram-sha256` | ★★★★★ — **mutual**; both sides prove identity | Recommended; browser, modern MCU, server-to-server |
+```json
+["auth:scram-sha256"]
+```
+
+Legacy `auth:challenge` is no longer part of the protocol. Servers should
+reject it with `ERR 400`.
 
 Authentication always happens **on channel 0** before any application channel
 may be opened. It consists of up to two phases:
@@ -569,40 +569,17 @@ may be opened. It consists of up to two phases:
    firmware. The server can reject unknown device types *before* any credentials
    are exchanged. Optional — if the server has no allowlist configured, this
    step can be skipped by the client.
-2. **Credential exchange** — one of the two mechanisms below.
+2. **Credential exchange** — SCRAM-SHA-256 with PBKDF2 + HMAC.
 
 ---
 
-### 6.1b Why SCRAM? — security advantages
+### 6.1b Security properties
 
-`auth:challenge` is a solid one-way challenge-response scheme, but it has one
-fundamental weakness: **the client cannot verify the server's identity**. A
-man-in-the-middle or a phishing server can issue a fake challenge and collect
-the client's response to crack offline.
-
-`auth:scram-sha256` eliminates this by making authentication **mutual**:
-
-| Threat | `auth:challenge` | `auth:scram-sha256` |
-|--------|-----------------|---------------------|
-| Password on wire | ✅ Never | ✅ Never |
-| Password hash on wire | ✅ Never | ✅ Never |
-| Replay attack (eavesdrop + replay) | ✅ Nonce prevents replay | ✅ Combined nonce (client + server) prevents replay |
-| Fake / impostor server (MITM) | ❌ Client cannot detect | ✅ `serverProof` exposes the impostor |
-| Proof swap (echo server’s proof as client’s proof) | — | ✅ `"server:"` / `"client:"` prefix makes the two proofs always differ |
-| Offline dictionary attack on captured traffic | ⚠ Possible if nonce is known | ⚠ Same — use strong passwords; add PBKDF2 for high-security deployments |
-| Complexity to implement on ESP32 | ✅ 2 SHA-256 ops | ✅ 3–4 SHA-256 ops; still no bignum or HMAC |
-
-**Why not use full SCRAM (RFC 5802)?** The RFC requires PBKDF2 key stretching
-and HMAC, which adds code size and compute time that is meaningful on
-constrained MCUs. WEEP’s `auth:scram-sha256` keeps the *structure* of SCRAM
-(mutual nonces, server proof, client proof) while replacing PBKDF2+HMAC with
-straight SHA-256 chains. For deployments that need full key stretching, store
-`pH = PBKDF2(password, salt, 10000)` instead of `SHA256(password)` — the rest
-of the protocol is unchanged.
-
-**Recommendation:** always use `auth:scram-sha256` when both sides support it.
-Keep `auth:challenge` available for backward compatibility with older or
-resource-constrained clients that cannot afford the extra SHA-256 round.
+`auth:scram-sha256` provides mutual authentication:
+- The client verifies the server proof before sending client proof.
+- The server verifies client proof before granting roles.
+- Passwords are never transmitted on the wire.
+- Proof verification must use constant-time comparison.
 
 ---
 
@@ -619,7 +596,7 @@ lowercase hex:
   "msgno":   0,
   "payload": {
     "profiles": ["weep:file", "weep:stream"],
-    "auth":     ["auth:challenge", "auth:scram-sha256"],
+    "auth":     ["auth:scram-sha256"],
     "serverInfo": {
       "brand":    "Acme",
       "model":    "WeepGateway-1000",
@@ -630,9 +607,7 @@ lowercase hex:
 }
 ```
 
-The `serverNonce` is always included and is used by both mechanisms:
-- `auth:challenge`: ignored by the client (server issues its own per-step nonce)
-- `auth:scram-sha256`: incorporated directly into the key derivation
+The `serverNonce` is always included and is incorporated into SCRAM key derivation.
 
 ---
 
@@ -705,107 +680,25 @@ If the allowlist is empty or absent, the server accepts all devices (open mode).
 If the allowlist is non-empty and no entry matches, the server rejects with
 `ERR 403`.
 
-The `clientInfo` fields are **not authenticated** at this stage — the server
-cannot verify they are honest until after the password exchange. The allowlist
-is therefore a **coarse filter** (stops misconfigured or wrong-brand devices),
-not a security boundary. The password exchange in §6.7–6.8 is the actual
-security boundary.
+The `clientInfo` fields are not authenticated at this stage. The allowlist is
+a coarse filter; credential exchange is the security boundary.
 
 ---
 
 ### 6.5 Credential storage (server side)
 
-Passwords are stored as `SHA-256(password_utf8)` in lowercase hex. The 32-byte
-hash is the **password hash** (`pH`). The raw password is never stored.
+Server-side users store PBKDF2 output metadata:
+- `passwordSalt`: 16 random bytes (hex)
+- `passwordIterations`: integer work factor (for example 120000)
+- `passwordKey`: PBKDF2-SHA256 derived key (32 bytes, hex)
 
 ```
-pH = lowercase_hex( SHA256( UTF8_bytes(password) ) )
-```
-
-Example:
-```
-password: "admin"
-pH = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
+pdk = PBKDF2-HMAC-SHA256(password_utf8, salt, iterations, 32 bytes)
 ```
 
 ---
 
-### 6.6 auth:challenge — legacy two-step challenge-response
-
-`auth:challenge` is a simple, unilateral mechanism: the server issues a random
-nonce; the client hashes its password with the nonce and returns the result.
-The server is **not** authenticated — the client has no way to detect an
-impostor. Prefer `auth:scram-sha256` for new implementations.
-
-#### Step 1 — client requests a challenge
-
-**Client → Server:**
-```json
-{
-  "type":    "MSG",
-  "channel": 0,
-  "msgno":   2,
-  "payload": {
-    "mechanism": "auth:challenge",
-    "username":  "admin"
-  }
-}
-```
-
-The server generates 16 cryptographically random bytes, stores them keyed to
-this connection, and replies:
-
-**Server → Client:**
-```json
-{
-  "type":    "RPY",
-  "channel": 0,
-  "msgno":   2,
-  "payload": {
-    "challenge": "3d7a9f2c1b0e8456af34cd12ef6789ab"
-  }
-}
-```
-
-#### Step 2 — client sends response
-
-The client computes:
-```
-pH       = lowercase_hex( SHA256( UTF8_bytes(password) ) )
-response = lowercase_hex( SHA256( UTF8_bytes(username + ":" + challenge + ":" + pH) ) )
-```
-
-**Client → Server:**
-```json
-{
-  "type":    "MSG",
-  "channel": 0,
-  "msgno":   3,
-  "payload": {
-    "mechanism": "auth:challenge",
-    "username":  "admin",
-    "response":  "<64-hex-char SHA-256 digest>"
-  }
-}
-```
-
-The server independently computes the expected response and compares using
-**constant-time equality**. On success:
-```json
-{ "type":"RPY", "channel":0, "msgno":3,
-  "payload": { "ok":true, "username":"admin", "roles":["admin"] } }
-```
-On failure:
-```json
-{ "type":"ERR", "channel":0, "msgno":3,
-  "payload": { "code":401, "message":"Authentication failed" } }
-```
-
-The challenge nonce is discarded after step 2 (success or failure).
-
----
-
-### 6.7 auth:scram-sha256 step 1 — client sends username + clientNonce
+### 6.6 auth:scram-sha256 step 1 — client sends username + clientNonce
 
 The client picks 16 random bytes for its own nonce and sends both:
 
@@ -828,14 +721,14 @@ shared key material:
 
 ```
 combinedNonce = serverNonce + clientNonce           (concatenate hex strings)
-pH            = stored password hash for username
-sharedKey     = lowercase_hex( SHA256( UTF8_bytes(pH + ":" + combinedNonce) ) )
+pdk           = stored PBKDF2 key for username
+sharedKey     = lowercase_hex( HMAC-SHA256( key=pdk, message=combinedNonce ) )
 ```
 
 The server computes its own proof and sends it back:
 
 ```
-serverProof = lowercase_hex( SHA256( UTF8_bytes("server:" + sharedKey) ) )
+serverProof = lowercase_hex( HMAC-SHA256( key=sharedKey, message="server:" + combinedNonce ) )
 ```
 
 **Server → Client:**
@@ -846,7 +739,9 @@ serverProof = lowercase_hex( SHA256( UTF8_bytes("server:" + sharedKey) ) )
   "msgno":   2,
   "payload": {
     "combinedNonce": "a3f8d2c1e9b047560f1234abcd56789ef47ac10b58cc4372a5670e02b2c3d479",
-    "serverProof":   "<64-hex-char SHA-256 digest>"
+    "serverProof":   "<64-hex-char HMAC digest>",
+    "salt":          "<hex>",
+    "iterations":    120000
   }
 }
 ```
@@ -855,7 +750,7 @@ serverProof = lowercase_hex( SHA256( UTF8_bytes("server:" + sharedKey) ) )
 independently computes `sharedKey` (it knows the password) and derives:
 
 ```
-expectedServerProof = lowercase_hex( SHA256( UTF8_bytes("server:" + sharedKey) ) )
+expectedServerProof = lowercase_hex( HMAC-SHA256( key=sharedKey, message="server:" + combinedNonce ) )
 ```
 
 If the server proof does not match, the client MUST close the connection — it is
@@ -863,12 +758,12 @@ talking to an impostor server. This is the **mutual** part of mutual auth.
 
 ---
 
-### 6.8 auth:scram-sha256 step 2 — client proves knowledge of password
+### 6.7 auth:scram-sha256 step 2 — client proves knowledge of password
 
 After verifying the server, the client sends its own proof:
 
 ```
-clientProof = lowercase_hex( SHA256( UTF8_bytes("client:" + sharedKey) ) )
+clientProof = lowercase_hex( HMAC-SHA256( key=sharedKey, message="client:" + combinedNonce ) )
 ```
 
 **Client → Server:**
@@ -913,21 +808,19 @@ clientProof = lowercase_hex( SHA256( UTF8_bytes("client:" + sharedKey) ) )
 
 ### 6.9 Complete key derivation summary
 
-All inputs to SHA-256 are UTF-8 strings. All outputs are 64-character lowercase
+All HMAC outputs are 64-character lowercase
 hex strings.
 
 ```
-# Both sides compute these — identical results if password is correct:
-
 combinedNonce = serverNonce + clientNonce
-pH            = lowercase_hex( SHA256( UTF8_bytes(password) ) )   # stored on server
-sharedKey     = lowercase_hex( SHA256( UTF8_bytes(pH + ":" + combinedNonce) ) )
+passwordKey   = PBKDF2-HMAC-SHA256(password, salt, iterations, 32)
+sharedKey     = HMAC-SHA256(passwordKey, combinedNonce)
 
 # Server sends this; client verifies it:
-serverProof   = lowercase_hex( SHA256( UTF8_bytes("server:" + sharedKey) ) )
+serverProof   = HMAC-SHA256(sharedKey, "server:" + combinedNonce)
 
 # Client sends this; server verifies it:
-clientProof   = lowercase_hex( SHA256( UTF8_bytes("client:" + sharedKey) ) )
+clientProof   = HMAC-SHA256(sharedKey, "client:" + combinedNonce)
 ```
 
 **Why two separate prefix strings?** `"server:"` and `"client:"` ensure that
@@ -936,32 +829,23 @@ from the same `sharedKey`. Without this, a replay attack would let a
 man-in-the-middle echo the server's proof back as the client's proof.
 
 **ESP32 implementation notes:**
-- SHA-256 is available in `mbedTLS` (bundled with ESP-IDF) as `mbedtls_sha256`.
-- In Arduino, use the `Crypto` library: `#include <SHA256.h>`.
-- No HMAC, no PBKDF2, no bignum arithmetic is required — only two to four
-  SHA-256 hash operations per connection.
-- The longest string hashed is ≈200 bytes (the step-2 input). A 512-byte stack
-  buffer is sufficient.
+- PBKDF2-HMAC-SHA256 and HMAC-SHA256 are available through mbedTLS in ESP-IDF.
+- Recommended MCU optimization: pre-store derived key (`passwordKey`) and avoid
+  running PBKDF2 during every login.
 
 **Browser (JavaScript) implementation notes:**
-- Use the Web Crypto API: `await crypto.subtle.digest('SHA-256', data)` where
-  `data` is `new TextEncoder().encode(inputString)`.
+- Use Web Crypto PBKDF2 (`deriveBits`) and HMAC (`subtle.sign`).
 - For random nonces: `crypto.getRandomValues(new Uint8Array(16))`.
-- Both APIs are available in all modern browsers and in Node.js ≥ 19.
-- Convert the returned `ArrayBuffer` to hex with:
-  ```js
-  Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('')
-  ```
 
 ---
 
 ### 6.10 Server-side verification
 
-The server recomputes `clientProof` using the stored password hash and the
+The server recomputes `clientProof` using the stored derived key and the
 combined nonce, then compares using **constant-time equality**:
 
 ```
-expected = lowercase_hex( SHA256( UTF8_bytes("client:" + sharedKey) ) )
+expected = HMAC-SHA256(sharedKey, "client:" + combinedNonce)
 ```
 
 In C#: `CryptographicOperations.FixedTimeEquals(expected, received)`.
@@ -990,7 +874,7 @@ server returns `ERR 403 "Insufficient roles for <profile>"`.
 
 ```
 CONNECTED
-    │  greeting sent (serverNonce + both auth mechanisms)
+  │  greeting sent (serverNonce + auth:scram-sha256)
     ▼
 AWAITING_MSG  (clientInfo optional; auth MSG accepted in any order)
     │
@@ -998,26 +882,17 @@ AWAITING_MSG  (clientInfo optional; auth MSG accepted in any order)
     │       ├── NOT in allowlist ──► ERR 403 ──► [CLOSED]
     │       └── accepted ──► ok  (still AWAITING_MSG)
     │
-    ├── ╌╌╌ auth:challenge ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
-    │   step 1: MSG { mechanism:"auth:challenge", username }
-    │       └─ send RPY { challenge }  ─► CHALLENGE_ISSUED
-    │           step 2: MSG { username, response }
-    │           ├── wrong ─► ERR 401 ─► AWAITING_MSG  (retry OK)
-    │           └── correct ─► AUTHENTICATED
-    │
-    └── ╌╌╌ auth:scram-sha256 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
-        step 1: MSG { mechanism:"auth:scram-sha256", username, clientNonce }
-            ├── unknown user ─► ERR 401 ─► AWAITING_MSG  (retry OK)
-            └─ send RPY { combinedNonce, serverProof }  ─► SCRAM_STEP1
-        step 2: MSG { username, clientProof }
-            └─── Client first VERIFIES serverProof (mutual) ───►
-            ├── wrong ─► ERR 401 ─► AWAITING_MSG  (nonce discarded; retry OK)
-            └── correct ─► AUTHENTICATED
+  └── auth:scram-sha256
+     step 1: MSG { mechanism:"auth:scram-sha256", username, clientNonce }
+       ├── unknown user ─► ERR 401 ─► AWAITING_MSG
+       └─ send RPY { combinedNonce, serverProof, salt, iterations } ─► SCRAM_STEP1
+     step 2: MSG { username, clientProof }
+       ├── wrong ─► ERR 401 ─► AWAITING_MSG
+       └── correct ─► AUTHENTICATED
 ```
 
 After `AUTHENTICATED`, re-authentication is accepted but not required.
-Both mechanisms may be attempted on the same connection (e.g. SCRAM fails,
-client falls back to challenge).
+Unsupported mechanisms (including `auth:challenge`) are rejected with `ERR 400`.
 
 ---
 
@@ -1775,25 +1650,22 @@ Use this list to verify a new implementation.
 
 ### Authentication
 
-**Common (both mechanisms)**
+**SCRAM-only requirements**
 - [ ] Include `serverNonce` (16 random bytes, lowercase hex) in every greeting.
-- [ ] Advertise both `"auth:challenge"` and `"auth:scram-sha256"` in `auth` array.
+- [ ] Advertise only `"auth:scram-sha256"` in `auth` array.
 - [ ] Include `serverInfo` block in greeting (`brand`, `model`, `firmware`).
 - [ ] Accept `clientInfo` message; check `brand`/`model` against device allowlist.
 - [ ] Reject with `ERR 403` and close if device not on allowlist.
 - [ ] Reject `start` with `ERR 401` if not yet authenticated.
 
-**auth:challenge (legacy)**
-- [ ] Step 1: receive `username`; generate per-step nonce (16 random bytes); send `RPY { challenge }`.
-- [ ] Step 2: receive `response`; compute `SHA256(username + ":" + nonce + ":" + pH)`.
-- [ ] Compare using **constant-time equality**; discard nonce on success or failure.
-
 **auth:scram-sha256 (mutual)**
-- [ ] Store password as `pH = SHA256(password_utf8)` in lowercase hex.
+- [ ] Reject unsupported auth mechanisms (including `auth:challenge`) with `ERR 400`.
+- [ ] Store password key metadata as PBKDF2 output (`salt`, `iterations`, `passwordKey`).
 - [ ] Step 1: receive `username` + `clientNonce`; compute `combinedNonce = serverNonce + clientNonce`.
-- [ ] Compute `sharedKey = SHA256(pH + ":" + combinedNonce)`.
-- [ ] Compute and send `serverProof = SHA256("server:" + sharedKey)` in step-1 reply.
-- [ ] Step 2: receive `clientProof`; compute `expected = SHA256("client:" + sharedKey)`.
+- [ ] Compute `sharedKey = HMAC-SHA256(passwordKey, combinedNonce)`.
+- [ ] Compute and send `serverProof = HMAC-SHA256(sharedKey, "server:" + combinedNonce)` in step-1 reply.
+- [ ] Include `salt` and `iterations` in the step-1 SCRAM reply.
+- [ ] Step 2: receive `clientProof`; compute `expected = HMAC-SHA256(sharedKey, "client:" + combinedNonce)`.
 - [ ] Compare `clientProof` vs `expected` using **constant-time equality**.
 - [ ] **Client-side**: verify `serverProof` before sending step 2; abort connection if wrong.
 
@@ -1920,7 +1792,7 @@ WEEP. The table documents deliberate divergences.
 | **Multiplexing** | Interleaved bytes in one TCP stream; explicit `SEQ`/window management | Separate WebSocket frames; window per channel via ACK binary frames |
 | **Flow control** | Per-channel sliding window (`SEQ` frames, advertised `window` parameter) | Per-channel sliding window via ACK binary frames (W=8, not advertised); `BoundedChannel` for stream profile |
 | **Channel 0** | Management only (tuning, profile negotiation, channel close) | Management + mandatory authentication |
-| **Authentication** | SASL via `beep:tls` and `beep:sasl` tuning profiles | Two mechanisms: `auth:challenge` (legacy, unilateral) and `auth:scram-sha256` (mutual — both sides prove identity); password never on wire |
+| **Authentication** | SASL via `beep:tls` and `beep:sasl` tuning profiles | `auth:scram-sha256` only (mutual auth with PBKDF2 + HMAC); password never on wire |
 | **Device identity** | No concept of device type filtering | `clientInfo` message + server-side device allowlist (`brand`/`model`) filters connections before credentials are checked |
 | **TLS** | Negotiated via `beep:tls` profile on channel 0 | Delegated to WebSocket layer (`wss://`) |
 | **Profile negotiation** | Both sides advertise and confirm profile URIs | Server advertises in greeting; client picks per `start` message |

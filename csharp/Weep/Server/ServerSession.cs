@@ -273,7 +273,7 @@ public sealed class ServerSession
         var profiles = new JsonArray(
             P.File, P.Stream, P.Read, P.Write,
             P.Sub, P.Pub, P.Invoke, P.Query);
-        var auth = new JsonArray("auth:challenge", "auth:scram-sha256");
+        var auth = new JsonArray("auth:scram-sha256");
 
         await SendJsonAsync(new JsonObject
         {

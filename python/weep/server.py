@@ -416,7 +416,7 @@ class ServerSession:
                             PROFILE_INVOKE,
                             PROFILE_QUERY,
                         ],
-                        "auth": ["auth:challenge", "auth:scram-sha256"],
+                        "auth": ["auth:scram-sha256"],
                         "version": "1.1",
                         "productName": "weep",
                         "maxChunkSize": 65536,
@@ -468,7 +468,10 @@ class ServerSession:
                     user = self._store.get_user(auth_user)
                     self._auth_roles = list(user.roles) if user else []
             else:
-                await self.send_json(msg_err(0, msgno, 401, "Invalid credentials"))
+                if auth_user == "unsupported":
+                    await self.send_json(msg_err(0, msgno, 400, "Unsupported mechanism; use auth:scram-sha256"))
+                else:
+                    await self.send_json(msg_err(0, msgno, 401, "Invalid credentials"))
             return
 
         if mtype == "start":

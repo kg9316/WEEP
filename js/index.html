@@ -175,9 +175,8 @@
     <div class="field">
       <label>Auth mechanism</label>
       <select id="mechanism" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px 10px;font-size:13px;outline:none;">
-        <option value="auto">Auto (prefer SCRAM)</option>
+        <option value="auto">Auto (SCRAM only)</option>
         <option value="auth:scram-sha256">auth:scram-sha256 (mutual)</option>
-        <option value="auth:challenge">auth:challenge (legacy)</option>
       </select>
     </div>
 
@@ -259,10 +258,47 @@ const PRIORITY_HIGH   = 0;
 const PRIORITY_NORMAL = 1;
 const PRIORITY_LOW    = 2;
 
-// ─── SHA-256 helpers (Web Crypto API) ───────────────────────────────────────
-async function sha256hex(str) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+// ─── Crypto helpers (Web Crypto API) ───────────────────────────────────────
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function hexToBytes(hex) {
+  if (!hex || (hex.length % 2) !== 0) throw new Error('Invalid hex string');
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+async function pbkdf2Hex(password, saltHex, iterations, keyLenBytes = 32) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      salt: hexToBytes(saltHex),
+      iterations,
+    },
+    keyMaterial,
+    keyLenBytes * 8,
+  );
+  return bytesToHex(new Uint8Array(bits));
+}
+
+async function hmacHex(keyHex, input) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    hexToBytes(keyHex),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(input));
+  return bytesToHex(new Uint8Array(sig));
 }
 
 // ─── SendWindow (counting semaphore) ────────────────────────────────────────
@@ -379,20 +415,6 @@ class WeepClient {
     });
   }
 
-  async loginWithChallenge(username, password) {
-    // Step 1 — request challenge
-    const rpy1 = await this._sendMgmt({ mechanism: 'auth:challenge', username });
-    const challenge = rpy1.challenge;
-    log(`Challenge received: ${challenge.slice(0, 8)}…`, 'inf');
-
-    // Step 2 — compute and send response
-    const pH       = await sha256hex(password);
-    const response = await sha256hex(`${username}:${challenge}:${pH}`);
-    const rpy2 = await this._sendMgmt({ mechanism: 'auth:challenge', username, response });
-    log(`Authenticated as "${rpy2.username}" roles=[${rpy2.roles?.join(', ')}]`, 'ok');
-    return rpy2;
-  }
-
   async loginWithScram(username, password) {
     // The serverNonce was stored when we received the greeting
     const serverNonce = this._serverNonce;
@@ -406,19 +428,24 @@ class WeepClient {
     // Step 1 — send clientNonce, receive combinedNonce + serverProof
     log(`SCRAM step 1 — clientNonce=${clientNonce.slice(0,8)}…`, 'inf');
     const rpy1 = await this._sendMgmt({ mechanism: 'auth:scram-sha256', username, clientNonce });
-    const { combinedNonce, serverProof: receivedServerProof } = rpy1;
+    const {
+      combinedNonce,
+      serverProof: receivedServerProof,
+      salt,
+      iterations,
+    } = rpy1;
 
     // Derive sharedKey and verify serverProof (MUTUAL AUTH)
-    const pH        = await sha256hex(password);
-    const sharedKey = await sha256hex(pH + ':' + combinedNonce);
-    const expectedServerProof = await sha256hex('server:' + sharedKey);
+    const passwordKey = await pbkdf2Hex(password, salt, Number(iterations));
+    const sharedKey = await hmacHex(passwordKey, combinedNonce);
+    const expectedServerProof = await hmacHex(sharedKey, 'server:' + combinedNonce);
     if (expectedServerProof !== receivedServerProof) {
       throw new Error('Server proof mismatch — possible impostor server!');
     }
     log(`SCRAM server verified ✓ — combinedNonce=${combinedNonce.slice(0,12)}…`, 'inf');
 
     // Step 2 — send clientProof
-    const clientProof = await sha256hex('client:' + sharedKey);
+    const clientProof = await hmacHex(sharedKey, 'client:' + combinedNonce);
     const rpy2 = await this._sendMgmt({ mechanism: 'auth:scram-sha256', username, clientProof });
     log(`SCRAM authenticated as "${rpy2.username}" roles=[${rpy2.roles?.join(', ')}]`, 'ok');
     return rpy2;
@@ -1011,19 +1038,21 @@ btnConnect.addEventListener('click', async () => {
     client = new WeepClient();
     await client.connect(url);
 
-    // Resolve mechanism: 'auto' → prefer scram if server supports it
+    // Resolve mechanism: 'auto' -> require SCRAM.
     let mech = mechSel;
     if (mech === 'auto') {
-      mech = client._authMechanisms.includes('auth:scram-sha256')
-           ? 'auth:scram-sha256' : 'auth:challenge';
+      mech = 'auth:scram-sha256';
       log(`Auto-selected mechanism: ${mech}`, 'inf');
     }
 
-    if (mech === 'auth:scram-sha256') {
-      await client.loginWithScram(user, pass);
-    } else {
-      await client.loginWithChallenge(user, pass);
+    if (!client._authMechanisms.includes('auth:scram-sha256')) {
+      throw new Error('Server does not advertise auth:scram-sha256');
     }
+
+    if (mech !== 'auth:scram-sha256') {
+      throw new Error('Only auth:scram-sha256 is supported');
+    }
+    await client.loginWithScram(user, pass);
 
     fileCh  = await client.openFileChannel(PREFERRED_CHUNK);
     fileChannelId.textContent  = `ch: ${fileCh._channel}`;

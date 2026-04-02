@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import hmac
 import json
 import secrets
 from dataclasses import dataclass
@@ -177,15 +178,6 @@ class AuthClient:
             server_nonce=payload.get("serverNonce"),
         )
 
-    async def login_with_challenge(self, username: str, password: str) -> dict:
-        first = await self._send_auth({"mechanism": "auth:challenge", "username": username})
-        nonce = first["challenge"]
-        p_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-        response = hashlib.sha256(f"{username}:{nonce}:{p_hash}".encode("utf-8")).hexdigest()
-        return await self._send_auth(
-            {"mechanism": "auth:challenge", "username": username, "response": response}
-        )
-
     async def login_with_scram(self, username: str, password: str) -> dict:
         greeting = await self.wait_for_greeting()
         if not greeting.server_nonce:
@@ -202,13 +194,33 @@ class AuthClient:
 
         combined_nonce = step1["combinedNonce"]
         server_proof = step1["serverProof"]
-        p_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-        shared_key = hashlib.sha256(f"{p_hash}:{combined_nonce}".encode("utf-8")).hexdigest()
-        expected_server = hashlib.sha256(f"server:{shared_key}".encode("utf-8")).hexdigest()
+        salt = step1["salt"]
+        iterations = int(step1["iterations"])
+        password_key = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            bytes.fromhex(str(salt)),
+            iterations,
+            dklen=32,
+        ).hex()
+        shared_key = hmac.new(
+            bytes.fromhex(password_key),
+            combined_nonce.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        expected_server = hmac.new(
+            bytes.fromhex(shared_key),
+            f"server:{combined_nonce}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
         if expected_server != server_proof:
             raise WeepError(401, "Server proof mismatch")
 
-        client_proof = hashlib.sha256(f"client:{shared_key}".encode("utf-8")).hexdigest()
+        client_proof = hmac.new(
+            bytes.fromhex(shared_key),
+            f"client:{combined_nonce}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
         return await self._send_auth(
             {
                 "mechanism": "auth:scram-sha256",

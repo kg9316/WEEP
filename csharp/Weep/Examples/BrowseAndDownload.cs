@@ -32,7 +32,7 @@ public sealed class BrowseAndDownload
         Console.WriteLine($"Server støtter: {string.Join(", ", greeting.Profiles)}");
         Console.WriteLine($"Auth:           {string.Join(", ", greeting.AuthMechanisms)}");
 
-        var user = await auth.LoginWithChallengeAsync("admin", "admin", ct);
+        var user = await auth.LoginWithScramAsync("admin", "admin", ct);
         Console.WriteLine($"Logget inn som '{user.Username}' roller=[{string.Join(", ", user.Roles)}]\n");
 
         // --- Åpne fil-kanal ---

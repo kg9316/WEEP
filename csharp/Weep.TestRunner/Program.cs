@@ -1,5 +1,6 @@
 ﻿using Weep.Client;
 using Weep.Server;
+using System.Text.Json.Nodes;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
@@ -130,56 +131,48 @@ sealed class TestRunner(string serverUrl, string label = "server")
         {
             var greeting = await auth.WaitForGreetingAsync();
             Ok($"Greeting: {greeting.Profiles.Count} profiles, auth=[{string.Join(", ", greeting.AuthMechanisms)}]");
+
+            bool authExactlyScram = greeting.AuthMechanisms.Count == 1
+                                  && greeting.AuthMechanisms[0] == "auth:scram-sha256";
+            if (authExactlyScram)
+                Ok("Greeting advertises SCRAM-only auth");
+            else
+            {
+                Fail("Greeting SCRAM-only", $"auth=[{string.Join(", ", greeting.AuthMechanisms)}]");
+                Summary();
+                return;
+            }
         }
         catch (Exception ex) { Fail("WaitForGreetingAsync", ex.Message); Summary(); return; }
 
         try
         {
-            var user = await auth.LoginWithChallengeAsync("admin", "admin");
-            Ok($"LoginWithChallenge: '{user.Username}' roles=[{string.Join(", ", user.Roles)}]");
+            await auth.ProbeAuthAsync(new JsonObject
+            {
+                ["mechanism"] = "auth:challenge",
+                ["username"] = "admin",
+            });
+            Fail("Reject legacy challenge", "Server unexpectedly accepted auth:challenge");
+            Summary();
+            return;
         }
-        catch (Exception ex) { Fail("LoginWithChallenge", ex.Message); Summary(); return; }
-
-        // -----------------------------------------------------------
-        // 1b. SCRAM mutual auth — separate connection, keeps both mechanisms alive
-        // -----------------------------------------------------------
-        Console.WriteLine("\n=== Auth SCRAM (mutual) ===");
-        await using var scramClient = new WeepClient();
-        var scramAuth = new AuthClient(scramClient);
-        bool scramOk  = true;
-
-        try   { await scramClient.ConnectAsync(new Uri(serverUrl)); Ok("SCRAM ConnectAsync"); }
-        catch (Exception ex) { Fail("SCRAM ConnectAsync", ex.Message); scramOk = false; }
-
-        if (scramOk) try
+        catch (WeepException ex) when (ex.Code == 400)
         {
-            var g2        = await scramAuth.WaitForGreetingAsync();
-            bool hasScram = g2.AuthMechanisms.Contains("auth:scram-sha256");
-            bool hasNonce = g2.ServerNonce is not null;
-            if (hasScram && hasNonce)
-                Ok($"SCRAM Greeting: auth=[{string.Join(", ", g2.AuthMechanisms)}] serverNonce=\u2713");
-            else
-                Fail("SCRAM Greeting", $"scram={hasScram} nonce={hasNonce}");
-            if (!hasScram || !hasNonce) scramOk = false;
+            Ok("Reject legacy challenge: ERR 400");
         }
-        catch (Exception ex) { Fail("SCRAM Greeting", ex.Message); scramOk = false; }
-
-        if (scramOk) try
+        catch (Exception ex)
         {
-            var su = await scramAuth.LoginWithScramAsync("admin", "admin");
-            Ok($"LoginWithScram: '{su.Username}' roles=[{string.Join(", ", su.Roles)}]");
+            Fail("Reject legacy challenge", ex.Message);
+            Summary();
+            return;
         }
-        catch (Exception ex) { Fail("LoginWithScram", ex.Message); scramOk = false; }
 
-        if (scramOk) try
+        try
         {
-            // Verify the SCRAM session is actually functional
-            await using var scramFt = new FileTransferClient(scramClient);
-            await scramFt.OpenAsync();
-            var listing = await scramFt.ListAsync("/");
-            Ok($"SCRAM session functional: {listing.Entries.Count} entries");
+            var user = await auth.LoginWithScramAsync("admin", "admin");
+            Ok($"LoginWithScram: '{user.Username}' roles=[{string.Join(", ", user.Roles)}]");
         }
-        catch (Exception ex) { Fail("SCRAM session verify", ex.Message); }
+        catch (Exception ex) { Fail("LoginWithScram", ex.Message); Summary(); return; }
 
         // -----------------------------------------------------------
         // 2. Open file channel + browse

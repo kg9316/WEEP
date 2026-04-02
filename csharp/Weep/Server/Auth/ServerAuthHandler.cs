@@ -9,16 +9,14 @@ public sealed record AuthResult(string Username, IReadOnlyList<string> Roles);
 
 /// <summary>
 /// Server-side auth handler.
-/// Supports auth:challenge (legacy) and auth:scram-sha256 (mutual).
+/// Supports auth:scram-sha256 (mutual) using PBKDF2 + HMAC-SHA256.
 /// </summary>
 public sealed class ServerAuthHandler(
     Func<string, Task> sendJson,
     UserStore          store,
     string             serverNonce)
 {
-    // Pending state for auth:challenge  (username → nonce)
-    private readonly Dictionary<string, string>     _pendingChallenges = new();
-    // Pending state for auth:scram-sha256 (username → ScramState)
+    // Pending state for auth:scram-sha256 (username -> ScramState)
     private readonly Dictionary<string, ScramState> _pendingScram      = new();
 
     private sealed record ScramState(string CombinedNonce, string SharedKey);
@@ -28,66 +26,20 @@ public sealed class ServerAuthHandler(
         var mechanism = payload["mechanism"]?.GetValue<string>() ?? "";
         return mechanism switch
         {
-            "auth:challenge"    => await ChallengeAsync(payload, msgno),
             "auth:scram-sha256" => await ScramAsync(payload, msgno),
-            _ => await RejectAsync(msgno, 400, $"Unsupported mechanism: {mechanism}"),
+            _ => await RejectAsync(msgno, 400, "Unsupported mechanism; use auth:scram-sha256"),
         };
-    }
-
-    // ------------------------------------------------------------------
-    // auth:challenge  (legacy two-step, server-issued nonce only)
-    // ------------------------------------------------------------------
-
-    private async Task<AuthResult?> ChallengeAsync(JsonObject payload, int msgno)
-    {
-        var username = payload["username"]?.GetValue<string>() ?? "";
-        var response = payload["response"]?.GetValue<string>();
-
-        if (string.IsNullOrEmpty(username))
-            return await RejectAsync(msgno, 400, "username required");
-
-        if (response is null)
-        {
-            // Step 1: issue challenge nonce
-            var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16))
-                               .ToLowerInvariant();
-            _pendingChallenges[username] = nonce;
-            await sendJson(new JsonObject
-            {
-                ["type"]    = MsgType.RPY.ToString(),
-                ["channel"] = 0,
-                ["msgno"]   = msgno,
-                ["payload"] = new JsonObject { ["challenge"] = nonce },
-            }.ToJsonString());
-            return null;
-        }
-
-        // Step 2: verify
-        if (!_pendingChallenges.Remove(username, out var storedNonce))
-            return await RejectAsync(msgno, 400, "No pending challenge");
-
-        var user = store.GetUser(username);
-        if (user is null)
-            return await RejectAsync(msgno, 401, "Invalid credentials");
-
-        var expected = ComputeSha256($"{username}:{storedNonce}:{user.PasswordHash}");
-        if (!CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(expected),
-                Encoding.UTF8.GetBytes(response)))
-            return await RejectAsync(msgno, 401, "Invalid credentials");
-
-        await SendOkAsync(msgno, user);
-        return new AuthResult(user.Username, user.Roles);
     }
 
     // ------------------------------------------------------------------
     // auth:scram-sha256  (mutual two-step — both sides prove identity)
     //
     // Key derivation (both sides compute identical values if pw correct):
+    //   pdk         = PBKDF2-SHA256(password, salt, iterations, 32)
     //   combinedNonce = serverNonce + clientNonce
-    //   sharedKey     = SHA256( pH + ":" + combinedNonce )
-    //   serverProof   = SHA256( "server:" + sharedKey )   ← server sends, client verifies
-    //   clientProof   = SHA256( "client:" + sharedKey )   ← client sends, server verifies
+    //   sharedKey     = HMAC-SHA256(pdk, combinedNonce)
+    //   serverProof   = HMAC-SHA256(sharedKey, "server:" + combinedNonce)
+    //   clientProof   = HMAC-SHA256(sharedKey, "client:" + combinedNonce)
     // ------------------------------------------------------------------
 
     private async Task<AuthResult?> ScramAsync(JsonObject payload, int msgno)
@@ -110,8 +62,8 @@ public sealed class ServerAuthHandler(
                 return await RejectAsync(msgno, 401, "Invalid credentials");
 
             var combinedNonce = serverNonce + clientNonce;
-            var sharedKey     = ComputeSha256(user.PasswordHash + ":" + combinedNonce);
-            var srvProof      = ComputeSha256("server:" + sharedKey);
+            var sharedKey     = ComputeHmacHex(user.PasswordKey, combinedNonce);
+            var srvProof      = ComputeHmacHex(sharedKey, "server:" + combinedNonce);
 
             _pendingScram[username] = new ScramState(combinedNonce, sharedKey);
 
@@ -124,6 +76,8 @@ public sealed class ServerAuthHandler(
                 {
                     ["combinedNonce"] = combinedNonce,
                     ["serverProof"]   = srvProof,
+                    ["salt"]          = user.PasswordSalt,
+                    ["iterations"]    = user.PasswordIterations,
                 },
             }.ToJsonString());
             return null;
@@ -137,10 +91,8 @@ public sealed class ServerAuthHandler(
         if (user2 is null)
             return await RejectAsync(msgno, 401, "Invalid credentials");
 
-        var expectedProof = ComputeSha256("client:" + state.SharedKey);
-        if (!CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(expectedProof),
-                Encoding.UTF8.GetBytes(clientProof)))
+        var expectedProof = ComputeHmacHex(state.SharedKey, "client:" + state.CombinedNonce);
+        if (!FixedHexEquals(expectedProof, clientProof))
             return await RejectAsync(msgno, 401, "Invalid credentials");
 
         await SendOkAsync(msgno, user2);
@@ -174,8 +126,25 @@ public sealed class ServerAuthHandler(
         return null;
     }
 
-    private static string ComputeSha256(string input) =>
-        Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(input))
-        ).ToLowerInvariant();
+    private static string ComputeHmacHex(string keyHex, string input)
+    {
+        var keyBytes = Convert.FromHexString(keyHex);
+        using var hmac = new HMACSHA256(keyBytes);
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static bool FixedHexEquals(string leftHex, string rightHex)
+    {
+        try
+        {
+            var left = Convert.FromHexString(leftHex);
+            var right = Convert.FromHexString(rightHex);
+            return CryptographicOperations.FixedTimeEquals(left, right);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
 }
