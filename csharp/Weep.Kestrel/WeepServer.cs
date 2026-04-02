@@ -54,24 +54,7 @@ public sealed class WeepServer
             KeepAliveInterval = TimeSpan.FromSeconds(30),
         });
 
-        // Serve the JS web UI on GET /
-        _app.MapGet("/", async ctx =>
-        {
-            var htmlFile = Path.Combine(Directory.GetCurrentDirectory(), "js", "index.html");
-            if (!File.Exists(htmlFile))
-            {
-                ctx.Response.StatusCode = 404;
-                return;
-            }
-            var html  = await File.ReadAllTextAsync(htmlFile, ct);
-            var bytes = Encoding.UTF8.GetBytes(html);
-            ctx.Response.ContentType   = "text/html; charset=utf-8";
-            ctx.Response.ContentLength = bytes.Length;
-            ctx.Response.Headers["Cache-Control"] = "no-cache";
-            await ctx.Response.Body.WriteAsync(bytes, ct);
-        });
-
-        _app.MapGet("/discover", async ctx =>
+        _app.MapGet("/weep/discover", async ctx =>
         {
             var services = await Weep.Client.WeepClient.DiscoverServersAsync(TimeSpan.FromSeconds(1.5), ct);
             var payload = services.Select(s => new
@@ -92,13 +75,25 @@ public sealed class WeepServer
             await ctx.Response.Body.WriteAsync(bytes, ct);
         });
 
-        // WEEP WebSocket endpoint at /weep
+        // /weep serves the JS web UI for normal GET requests and
+        // promotes to a WebSocket session for Upgrade requests.
         _app.Map("/weep", async ctx =>
         {
             if (!ctx.WebSockets.IsWebSocketRequest)
             {
-                ctx.Response.StatusCode = 400;
-                await ctx.Response.WriteAsync("Expected a WebSocket upgrade request.", ct);
+                // Serve the browser UI
+                var htmlFile = Path.Combine(Directory.GetCurrentDirectory(), "js", "index.html");
+                if (!File.Exists(htmlFile))
+                {
+                    ctx.Response.StatusCode = 404;
+                    return;
+                }
+                var html  = await File.ReadAllTextAsync(htmlFile, ct);
+                var bytes = Encoding.UTF8.GetBytes(html);
+                ctx.Response.ContentType   = "text/html; charset=utf-8";
+                ctx.Response.ContentLength = bytes.Length;
+                ctx.Response.Headers["Cache-Control"] = "no-cache";
+                await ctx.Response.Body.WriteAsync(bytes, ct);
                 return;
             }
 
@@ -122,8 +117,7 @@ public sealed class WeepServer
         });
 
         Console.WriteLine($"[weep] Kestrel listening on {url}  (auth={RequireAuth})");
-        Console.WriteLine($"[weep] Web UI:    {url}/");
-        Console.WriteLine($"[weep] Endpoint:  {url}/weep");
+        Console.WriteLine($"[weep] Web UI + WS: {url}/weep");
 
         if (EnableMdnsDiscovery)
         {

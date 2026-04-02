@@ -112,7 +112,7 @@ public sealed class WeepServerHttpListener
         // Plain HTTP — serve the JS web UI on GET /weep
         if (!ctx.Request.IsWebSocketRequest)
         {
-            if (ctx.Request.HttpMethod == "GET" && reqPath == "/discover")
+            if (ctx.Request.HttpMethod == "GET" && reqPath == "/weep/discover")
             {
                 var services = await Weep.Client.WeepClient.DiscoverServersAsync(TimeSpan.FromSeconds(1.5), ct);
                 var payload = services.Select(s => new

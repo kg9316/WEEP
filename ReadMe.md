@@ -28,8 +28,9 @@ Version 1.2 — April 2026
 12. [Planned Profiles](#12-planned-profiles)
 13. [Error Handling](#13-error-handling)
 14. [Implementation Checklist](#14-implementation-checklist)
-15. [Arduino and ESP32 Implementation Notes](#15-arduino-and-esp32-implementation-notes)
-16. [Differences from BEEP (RFC 3080)](#16-differences-from-beep-rfc-3080)
+15. [LAN Discovery HTTP API](#15-lan-discovery-http-api)
+16. [Arduino and ESP32 Implementation Notes](#16-arduino-and-esp32-implementation-notes)
+17. [Differences from BEEP (RFC 3080)](#17-differences-from-beep-rfc-3080)
 
 ---
 
@@ -1722,7 +1723,115 @@ Use this list to verify a new implementation.
 
 ---
 
-## 15. Arduino and ESP32 Implementation Notes
+## 15. LAN Discovery HTTP API
+
+Weep servers expose a small REST endpoint that lets browsers and other HTTP clients
+find other WEEP services on the local network without needing direct mDNS access.
+All paths live under `/weep` so the WEEP surface can coexist with other web
+applications on the same port.
+
+### 15.1 URL layout
+
+| Path | Method | Purpose |
+|------|--------|---------|
+| `/weep` | `GET` (plain) | Serves the browser UI (`index.html`) |
+| `/weep` | `GET` + `Upgrade: websocket` | Promotes to a WEEP WebSocket session |
+| `/weep/discover` | `GET` | Returns discovered WEEP services as JSON |
+
+### 15.2 `GET /weep/discover`
+
+The server runs a short mDNS/DNS-SD browse for `_weep._tcp.local` (1.5 s timeout)
+and returns every discovered service as a JSON array. The client can use the
+result to populate a server chooser UI without knowing any IP in advance.
+
+**Request**
+```
+GET /weep/discover HTTP/1.1
+Host: 192.168.1.10:9443
+```
+
+**Response** `200 OK`, `Content-Type: application/json; charset=utf-8`
+```json
+[
+  {
+    "instanceName": "livingroom-sensor",
+    "hostName":     "esp32-sensor.local",
+    "port":         9443,
+    "path":         "/weep",
+    "version":      "1.2",
+    "authMechanisms": ["auth:scram-sha256"],
+    "addresses":    ["192.168.1.42"],
+    "wsUrl":        "ws://192.168.1.42:9443/weep"
+  },
+  {
+    "instanceName": "gateway",
+    "hostName":     "gateway.local",
+    "port":         9443,
+    "path":         "/weep",
+    "version":      "1.2",
+    "authMechanisms": ["auth:scram-sha256"],
+    "addresses":    ["192.168.1.1"],
+    "wsUrl":        "ws://192.168.1.1:9443/weep"
+  }
+]
+```
+
+**Response fields**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `instanceName` | string | Human-readable mDNS instance name |
+| `hostName` | string | mDNS hostname (`.local` suffix) |
+| `port` | number | TCP port the service listens on |
+| `path` | string | HTTP path for the WebSocket endpoint |
+| `version` | string | WEEP protocol version advertised in TXT record |
+| `authMechanisms` | string[] | Supported auth mechanisms from TXT record |
+| `addresses` | string[] | Resolved IPv4/IPv6 addresses, sorted LAN-first |
+| `wsUrl` | string | Ready-to-use WebSocket URL built from the preferred address |
+
+**Address preference order** (most-preferred first):
+1. `127.0.0.1` / `::1` — loopback (same machine)
+2. `192.168.x.x` — Wi-Fi / home LAN
+3. `172.16–31.x.x` — corporate private
+4. `10.x.x.x` — other private (mobile broadband, VPN)
+5. global IPv6
+6. link-local (`169.254.x.x`, `fe80::/10`) — last resort
+
+The browser UI fetches this endpoint automatically when the user clicks **Find**.
+The `wsUrl` field is pre-built and can be used directly as the WebSocket URL
+without any client-side address selection logic.
+
+### 15.3 mDNS advertisement
+
+Each running WEEP server advertises itself with:
+
+- **Service type:** `_weep._tcp.local`
+- **Instance name:** `<machinename>-weep` (configurable)
+- **Port:** as configured
+- **TXT records:**
+  - `path=/weep`
+  - `version=1.2`
+  - `auth=auth:scram-sha256`
+
+If two instances on the same link use the same instance name, the library
+auto-resolves the conflict by appending a numeric suffix.
+
+### 15.4 Coexistence with other web applications
+
+Because every WEEP HTTP path starts with `/weep`, a single server (or reverse
+proxy) can host WEEP alongside any other web application:
+
+```
+https://example.com/          → your existing app
+https://example.com/weep      → WEEP browser UI + WebSocket endpoint
+https://example.com/weep/discover → discovery API
+```
+
+No root redirect is installed. The root path (`/`) is left completely free.
+
+---
+
+## 16. Arduino and ESP32 Implementation Notes
 
 Short answer: yes, WEEP is practical on ESP32 and Arduino-class boards.
 
@@ -1732,7 +1841,7 @@ Short answer: yes, WEEP is practical on ESP32 and Arduino-class boards.
 |---------|------------------|-------|
 | ESP32 as WEEP client | Sensors and field devices | Connects to C# or Python WEEP server over `ws://` or `wss://` |
 | ESP32 as small WEEP server | Small LAN deployments | Keep channel/profile set minimal to control RAM usage |
-| Browser UI + MCU backend | Human operator tools | Browser cannot do mDNS directly; keep `/discover` HTTP endpoint on server/gateway |
+| Browser UI + MCU backend | Human operator tools | Browser cannot do mDNS directly; the server exposes `GET /weep/discover` — see [Section 15](#15-lan-discovery-http-api) |
 
 ### 15.2 Discovery on ESP32 (mDNS/DNS-SD)
 
@@ -1784,7 +1893,7 @@ For non-ESP Arduino targets, running as a WEEP client is usually easier than hos
 
 ---
 
-## 16. Differences from BEEP (RFC 3080)
+## 17. Differences from BEEP (RFC 3080)
 
 ### Historical context
 

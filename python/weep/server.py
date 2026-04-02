@@ -556,17 +556,7 @@ class WeepServer:
         self.files_dir.mkdir(parents=True, exist_ok=True)
 
         async def process_request(path: str, request_headers: Any):
-            if path == "/":
-                html_path = Path("js") / "index.html"
-                if html_path.exists():
-                    body = html_path.read_bytes()
-                    return 200, [
-                        ("Content-Type", "text/html; charset=utf-8"),
-                        ("Cache-Control", "no-cache"),
-                    ], body
-                return 404, [("Content-Type", "text/plain")], b"index.html not found"
-
-            if path == "/discover":
+            if path == "/weep/discover":
                 discovered = await discover_services(timeout=1.5)
                 body = json.dumps([d.to_dict() for d in discovered]).encode("utf-8")
                 return 200, [
@@ -575,15 +565,17 @@ class WeepServer:
                 ], body
 
             if path == "/weep":
-                # Friendly hint for users who open /weep directly in a browser tab.
-                # Real WebSocket clients send Upgrade: websocket and must pass through.
+                # Serve the browser UI for plain GET; let WebSocket upgrades through.
                 upgrade = str(request_headers.get("Upgrade", "")).lower()
                 if upgrade != "websocket":
-                    body = (
-                        b"This endpoint is WebSocket-only. Open http://localhost:9555/ "
-                        b"for the web UI, which connects to ws://localhost:9555/weep."
-                    )
-                    return 400, [("Content-Type", "text/plain; charset=utf-8")], body
+                    html_path = Path("js") / "index.html"
+                    if html_path.exists():
+                        body = html_path.read_bytes()
+                        return 200, [
+                            ("Content-Type", "text/html; charset=utf-8"),
+                            ("Cache-Control", "no-cache"),
+                        ], body
+                    return 404, [("Content-Type", "text/plain")], b"index.html not found"
             return None
 
         async def handler(ws: WebSocketServerProtocol, path: str):
@@ -632,8 +624,7 @@ async def _main_async() -> None:
     server = WeepServer(host=args.host, port=args.port, files_dir=args.files)
     await server.start()
     print(f"[weep-py] listening on http://{args.host}:{args.port}")
-    print(f"[weep-py] web ui:    http://{args.host}:{args.port}/")
-    print(f"[weep-py] endpoint:  ws://{args.host}:{args.port}/weep")
+    print(f"[weep-py] web ui + ws: http://{args.host}:{args.port}/weep")
     stop = asyncio.Event()
 
     try:

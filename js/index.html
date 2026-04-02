@@ -845,7 +845,7 @@ async function refreshDiscoveredServers() {
   btnDiscover.disabled = true;
   discoveryStatus.textContent = 'Discovering...';
   try {
-    const res = await fetch('/discover', { cache: 'no-store' });
+    const res = await fetch('/weep/discover', { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const list = await res.json();
     const now = new Date().toLocaleTimeString();
