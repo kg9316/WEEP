@@ -16,10 +16,10 @@ public static class Profiles
     public const string Stream = "weep:stream";
     public const string Read   = "weep:read";
     public const string Write  = "weep:write";
-    public const string Sub    = "baja:sub";
+    public const string Sub    = "weep:sub";
     public const string Pub    = "weep:pub";
     public const string Invoke = "weep:invoke";
-    public const string Query  = "baja:query";
+    public const string Query  = "weep:query";
 }
 
 public sealed record Message(

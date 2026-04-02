@@ -11,10 +11,10 @@ PROFILE_FILE = "weep:file"
 PROFILE_STREAM = "weep:stream"
 PROFILE_READ = "weep:read"
 PROFILE_WRITE = "weep:write"
-PROFILE_SUB = "baja:sub"
+PROFILE_SUB = "weep:sub"
 PROFILE_PUB = "weep:pub"
 PROFILE_INVOKE = "weep:invoke"
-PROFILE_QUERY = "baja:query"
+PROFILE_QUERY = "weep:query"
 
 
 def encode_data_frame(channel: int, seq: int, data: bytes, final: bool) -> bytes:

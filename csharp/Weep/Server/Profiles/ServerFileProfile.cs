@@ -306,7 +306,7 @@ public sealed class ServerFileProfile(
         [".jpg"]   = "image/jpeg",
         [".jpeg"]  = "image/jpeg",
         [".bin"]   = "application/octet-stream",
-        [".bog"]   = "application/x-baja",
+        [".bog"]   = "application/x-weep",
     };
 
     private static string GuessMime(string filename) =>

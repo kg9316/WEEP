@@ -71,8 +71,17 @@
   .log-panel .err { color: var(--red); }
   .log-panel .inf { color: var(--accent2); }
 
+  /* ── channel panes ────────────────────────────────────────────── */
+  .browser { flex: 1; display: grid; grid-template-columns: 1.35fr .85fr; overflow: hidden; }
+  .channel-pane { display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid var(--border); }
+  .channel-header { background: var(--panel); border-bottom: 1px solid var(--border);
+                    padding: 10px 14px; display: flex; align-items: center; justify-content: space-between;
+                    font-size: 12px; color: var(--muted); }
+  .channel-header strong { color: var(--text); font-size: 13px; }
+  .channel-id { font-family: 'Cascadia Code', 'Fira Code', monospace; color: var(--accent2); }
+
   /* ── file browser ────────────────────────────────────────────── */
-  .browser { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .file-pane { border-left: none; }
   .browser-toolbar { background: var(--panel); border-bottom: 1px solid var(--border);
                      padding: 10px 18px; display: flex; align-items: center; gap: 10px;
                      flex-wrap: wrap; }
@@ -98,6 +107,26 @@
   .action-cell { display: flex; gap: 6px; justify-content: flex-end; }
   .btn-sm { padding: 4px 10px; font-size: 11px; border-radius: 5px; }
   .empty-state { text-align: center; padding: 60px 20px; color: var(--muted); }
+
+  /* ── query pane ──────────────────────────────────────────────── */
+  .query-wrap { padding: 14px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+  .query-wrap textarea {
+    width: 100%; min-height: 96px; resize: vertical;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); padding: 10px; font-size: 13px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+  }
+  .query-result {
+    flex: 1; overflow: auto; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px; font-size: 12px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace; white-space: pre-wrap;
+  }
+
+  @media (max-width: 980px) {
+    .browser { grid-template-columns: 1fr; }
+    .channel-pane { border-left: none; border-top: 1px solid var(--border); }
+    .file-pane { border-top: none; }
+  }
 
   /* ── progress overlay ────────────────────────────────────────── */
   #progress-bar-wrap { display: none; flex-direction: column; gap: 6px;
@@ -133,7 +162,7 @@
 
     <div class="field">
       <label>Server URL</label>
-      <input id="url" value="ws://localhost:9443/weep" />
+      <input id="url" value="" />
     </div>
     <div class="field">
       <label>Username</label>
@@ -160,36 +189,55 @@
     <div class="log-panel" id="log"></div>
   </aside>
 
-  <!-- ── file browser ──────────────────────────────────── -->
+  <!-- ── channel panes ─────────────────────────────────── -->
   <section class="browser">
-    <div class="browser-toolbar">
-      <div class="breadcrumb" id="breadcrumb">
-        <a onclick="navigate('/')">⌂ root</a>
+    <section class="channel-pane file-pane">
+      <div class="channel-header">
+        <strong>weep:file</strong>
+        <span class="channel-id" id="file-channel-id">ch: -</span>
       </div>
-      <button class="btn btn-upload btn-sm" id="btn-upload" disabled>⬆ Upload here</button>
-      <input type="file" id="upload-input" multiple />
-    </div>
+      <div class="browser-toolbar">
+        <div class="breadcrumb" id="breadcrumb">
+          <a onclick="navigate('/')">⌂ root</a>
+        </div>
+        <button class="btn btn-upload btn-sm" id="btn-upload" disabled>⬆ Upload here</button>
+        <input type="file" id="upload-input" multiple />
+      </div>
 
-    <div id="progress-bar-wrap">
-      <span id="progress-label">Uploading…</span>
-      <div class="progress-track"><div id="progress-fill"></div></div>
-    </div>
+      <div id="progress-bar-wrap">
+        <span id="progress-label">Uploading…</span>
+        <div class="progress-track"><div id="progress-fill"></div></div>
+      </div>
 
-    <div class="file-table-wrap">
-      <table id="file-table">
-        <thead>
-          <tr>
-            <th style="width:46%">Name</th>
-            <th style="width:14%">Size</th>
-            <th style="width:24%">MIME</th>
-            <th style="width:16%"></th>
-          </tr>
-        </thead>
-        <tbody id="file-body">
-          <tr><td colspan="4" class="empty-state">Not connected</td></tr>
-        </tbody>
-      </table>
-    </div>
+      <div class="file-table-wrap">
+        <table id="file-table">
+          <thead>
+            <tr>
+              <th style="width:46%">Name</th>
+              <th style="width:14%">Size</th>
+              <th style="width:24%">MIME</th>
+              <th style="width:16%"></th>
+            </tr>
+          </thead>
+          <tbody id="file-body">
+            <tr><td colspan="4" class="empty-state">Not connected</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="channel-pane query-pane">
+      <div class="channel-header">
+        <strong>weep:query</strong>
+        <span class="channel-id" id="query-channel-id">ch: -</span>
+      </div>
+      <div class="query-wrap">
+        <label for="query-input">Query String</label>
+        <textarea id="query-input" placeholder="select * from station">select * from station</textarea>
+        <button class="btn btn-primary" id="btn-run-query" disabled>Run Query</button>
+        <div class="query-result" id="query-result">Not connected</div>
+      </div>
+    </section>
   </section>
 </main>
 
@@ -390,6 +438,19 @@ class WeepClient {
     log(`Opened weep:file channel ${channel}`, 'ok');
     return new FileChannel(this, channel,
       Math.min(preferredChunkSize, this.maxChunkSize));
+  }
+
+  async openQueryChannel() {
+    const channel = this._nextChannel++;
+    this._channels.set(channel, { onBinary: null, onText: null, msgHandlers: new Map() });
+    try {
+      await this._sendStart(channel, 'weep:query', PREFERRED_CHUNK);
+      log(`Opened weep:query channel ${channel}`, 'ok');
+      return new QueryChannel(this, channel);
+    } catch (err) {
+      this._channels.delete(channel);
+      throw err;
+    }
   }
 
   // ── Internal — send management MSG on channel 0 ─────────────────────────
@@ -646,11 +707,45 @@ class FileChannel {
   }
 }
 
+// ─── QueryChannel ───────────────────────────────────────────────────────────
+class QueryChannel {
+  constructor(client, channel) {
+    this._client  = client;
+    this._channel = channel;
+    this._msgno   = 1;
+    this._pending = new Map();
+
+    client._channels.get(channel).onText   = msg => this._onText(msg);
+    client._channels.get(channel).onBinary = () => {};
+  }
+
+  query(q) {
+    const msgno = this._msgno++;
+    return new Promise((resolve, reject) => {
+      this._pending.set(msgno, { resolve, reject });
+      this._client._sendJson({
+        type: 'MSG', channel: this._channel, msgno,
+        payload: { op: 'query', q }
+      });
+    });
+  }
+
+  _onText(msg) {
+    const { type, msgno, payload } = msg;
+    const h = this._pending.get(msgno);
+    if (!h) return;
+    this._pending.delete(msgno);
+    if (type === 'ERR') h.reject(new Error(`${payload.code}: ${payload.message}`));
+    else                h.resolve(payload);
+  }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  UI
 // ═════════════════════════════════════════════════════════════════════════════
 let client    = null;
 let fileCh    = null;
+let queryCh   = null;
 let currentPath = '/';
 
 // ── DOM refs ────────────────────────────────────────────────────────────────
@@ -667,6 +762,17 @@ const progressWrap = document.getElementById('progress-bar-wrap');
 const progressFill = document.getElementById('progress-fill');
 const progressLbl  = document.getElementById('progress-label');
 const toast        = document.getElementById('toast');
+const fileChannelId= document.getElementById('file-channel-id');
+const queryChannelId= document.getElementById('query-channel-id');
+const btnRunQuery  = document.getElementById('btn-run-query');
+const queryInput   = document.getElementById('query-input');
+const queryResult  = document.getElementById('query-result');
+
+// Default WebSocket URL tracks where the UI is hosted.
+(() => {
+  const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  document.getElementById('url').value = `${wsScheme}://${window.location.host}/weep`;
+})();
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 function log(msg, cls = '') {
@@ -698,7 +804,13 @@ function setConnected(yes) {
   btnConnect.disabled    = yes;
   btnDisconnect.disabled = !yes;
   btnUpload.disabled     = !yes;
+  btnRunQuery.disabled   = !yes || !queryCh;
   if (!yes) renderEmpty('Disconnected');
+  if (!yes) {
+    fileChannelId.textContent = 'ch: -';
+    queryChannelId.textContent = 'ch: -';
+    queryResult.textContent = 'Not connected';
+  }
 }
 
 function setProgress(label, pct) {
@@ -859,6 +971,32 @@ uploadInput.addEventListener('change', async () => {
   await navigate(currentPath);
 });
 
+// ── Query ───────────────────────────────────────────────────────────────────
+btnRunQuery.addEventListener('click', async () => {
+  if (!queryCh) {
+    showToast('Query channel is not available on this server', 'err');
+    return;
+  }
+  const q = queryInput.value.trim();
+  if (!q) {
+    showToast('Query cannot be empty', 'err');
+    return;
+  }
+  btnRunQuery.disabled = true;
+  queryResult.textContent = 'Running query...';
+  try {
+    const res = await queryCh.query(q);
+    queryResult.textContent = JSON.stringify(res, null, 2);
+    log(`Query ok (${q.length} chars)`, 'ok');
+  } catch (err) {
+    queryResult.textContent = `Error: ${err.message}`;
+    log(`Query error: ${err.message}`, 'err');
+    showToast(`Query failed: ${err.message}`, 'err');
+  } finally {
+    btnRunQuery.disabled = false;
+  }
+});
+
 // ── Connect / Disconnect ──────────────────────────────────────────────────────
 btnConnect.addEventListener('click', async () => {
   const url       = document.getElementById('url').value.trim();
@@ -887,7 +1025,20 @@ btnConnect.addEventListener('click', async () => {
       await client.loginWithChallenge(user, pass);
     }
 
-    fileCh = await client.openFileChannel(PREFERRED_CHUNK);
+    fileCh  = await client.openFileChannel(PREFERRED_CHUNK);
+    fileChannelId.textContent  = `ch: ${fileCh._channel}`;
+
+    try {
+      queryCh = await client.openQueryChannel();
+      queryChannelId.textContent = `ch: ${queryCh._channel}`;
+      queryResult.textContent = 'Query channel ready. Run a query to see result.';
+    } catch (queryErr) {
+      queryCh = null;
+      queryChannelId.textContent = 'ch: n/a';
+      queryResult.textContent = 'Server does not support weep:query.';
+      log(`Query channel unavailable: ${queryErr.message}`, 'inf');
+    }
+
     setConnected(true);
     showToast('Connected!');
     await navigate('/');
@@ -895,14 +1046,14 @@ btnConnect.addEventListener('click', async () => {
     log(`Connection failed: ${err.message}`, 'err');
     showToast(`Failed: ${err.message}`, 'err');
     client?.disconnect();
-    client = null; fileCh = null;
+    client = null; fileCh = null; queryCh = null;
     btnConnect.disabled = false;
   }
 });
 
 btnDisconnect.addEventListener('click', () => {
   client?.disconnect();
-  client = null; fileCh = null;
+  client = null; fileCh = null; queryCh = null;
   setConnected(false);
   showToast('Disconnected', 'err');
   log('Disconnected by user');

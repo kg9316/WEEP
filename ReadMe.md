@@ -258,6 +258,73 @@ Defined profiles:
 
 ---
 
+### 3.4 Query Profile (Server Handler Map)
+
+The query payload is intentionally treated as an opaque string so application
+code can use SQL, BQL-like syntax, or any custom DSL without protocol changes.
+
+**Request shape (channel opened with `weep:query`):**
+
+```json
+{
+  "type": "MSG",
+  "channel": 2,
+  "msgno": 11,
+  "payload": {
+    "op": "query",
+    "q": "select * from station where kind='point'"
+  }
+}
+```
+
+**Current default response shape (stub):**
+
+```json
+{
+  "type": "RPY",
+  "channel": 2,
+  "msgno": 11,
+  "payload": {
+    "resultType": "array",
+    "query": "select * from station where kind='point'",
+    "items": [
+      {"name": "row1", "value": 123},
+      {"name": "row2", "value": 456},
+      {"name": "row3", "value": 789}
+    ]
+  }
+}
+```
+
+#### C# server: function call path for incoming query
+
+1. `ServerSession.DispatchTextAsync(...)`
+2. `ServerSession.RouteToChannelAsync(...)`
+3. `ServerQueryProfile.HandleAsync(payload, msgno)`
+
+Files:
+- `csharp/Weep/Server/ServerSession.cs`
+- `csharp/Weep/Server/Profiles/ServerQueryProfile.cs`
+
+#### Python server: function call path for incoming query
+
+1. `ServerSession._dispatch_text(...)`
+2. `ServerSession._open_channel(...)` opened a `QueryProfile`
+3. `QueryProfile.handle_text(payload, msgno)`
+
+File:
+- `python/weep/server.py`
+
+#### Where to implement your real query backend
+
+- C#: replace fixed `items` generation inside `ServerQueryProfile.HandleAsync`.
+- Python: replace fixed `items` generation inside `QueryProfile.handle_text`.
+
+Keep the wire contract stable (`op`, `q` in; JSON payload out) so JS/C#/Python
+clients continue to work unchanged.
+
+---
+
 ## 4. JSON Message Envelope
 
 Every **text** WebSocket frame contains exactly one JSON object with this
