@@ -1,4 +1,4 @@
-from .client import WeepClient, AuthClient, FileTransferClient, StreamChannel
+from .client import WeepClient, AuthClient, FileTransferClient, StreamChannel, QueryClient
 from .server import WeepServer
 
 __all__ = [
@@ -6,5 +6,6 @@ __all__ = [
     "AuthClient",
     "FileTransferClient",
     "StreamChannel",
+    "QueryClient",
     "WeepServer",
 ]

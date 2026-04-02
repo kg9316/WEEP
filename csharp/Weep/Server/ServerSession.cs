@@ -212,6 +212,7 @@ public sealed class ServerSession
                             negotiatedChunkSize),
             P.Stream => new ServerStreamProfile(channelId.Value, SendJsonAsync,
                             data => EnqueueBinary(data, SendPriority.Normal)),
+            P.Query  => new ServerQueryProfile(channelId.Value, SendJsonAsync),
             _ => null,
         };
 
@@ -239,6 +240,7 @@ public sealed class ServerSession
         {
             case ServerFileProfile   fp: await fp.HandleAsync(payload, msgno);   break;
             case ServerStreamProfile sp: await sp.HandleAsync(payload, msgno);   break;
+            case ServerQueryProfile  qp: await qp.HandleAsync(payload, msgno);   break;
             default:
                 await SendJsonAsync(MessageFactory.Error(channel, msgno, 500,
                     "No handler for channel"));

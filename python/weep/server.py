@@ -314,6 +314,46 @@ class StreamProfile:
             yield chunk
 
 
+class QueryProfile:
+    def __init__(self, session: "ServerSession", channel: int) -> None:
+        self._session = session
+        self._channel = channel
+        self._fixed_rows = [
+            {"name": "row1", "value": 123},
+            {"name": "row2", "value": 456},
+            {"name": "row3", "value": 789},
+        ]
+
+    async def handle_text(self, payload: dict, msgno: int) -> None:
+        op = str(payload.get("op", "query")).lower()
+        if op != "query":
+            await self._session.send_json(msg_err(self._channel, msgno, 400, f"Unknown op: {op}"))
+            return
+
+        q = payload.get("q")
+        if not isinstance(q, str) or not q.strip():
+            await self._session.send_json(msg_err(self._channel, msgno, 400, "q required"))
+            return
+
+        await self._session.send_json(
+            dumps(
+                {
+                    "type": "RPY",
+                    "channel": self._channel,
+                    "msgno": msgno,
+                    "payload": {
+                        "resultType": "array",
+                        "query": q,
+                        "items": list(self._fixed_rows),
+                    },
+                }
+            )
+        )
+
+    async def handle_binary(self, _frame: bytes) -> None:
+        return
+
+
 class ServerSession:
     def __init__(self, ws: WebSocketServerProtocol, store: UserStore, files_dir: Path, require_auth: bool) -> None:
         self._ws = ws
@@ -482,6 +522,11 @@ class ServerSession:
 
         if profile == PROFILE_STREAM:
             self._channels[channel] = StreamProfile(self, channel)
+            await self.send_json(msg_ok(msgno))
+            return
+
+        if profile == PROFILE_QUERY:
+            self._channels[channel] = QueryProfile(self, channel)
             await self.send_json(msg_ok(msgno))
             return
 

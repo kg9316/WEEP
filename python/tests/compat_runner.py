@@ -10,7 +10,7 @@ PYTHON_DIR = ROOT / "python"
 if str(PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(PYTHON_DIR))
 
-from weep import AuthClient, FileTransferClient, StreamChannel, WeepClient  # noqa: E402
+from weep import AuthClient, FileTransferClient, QueryClient, StreamChannel, WeepClient  # noqa: E402
 
 
 class RunnerError(RuntimeError):
@@ -131,6 +131,24 @@ async def python_stream_smoke(ws_url: str) -> None:
     await client.close()
 
 
+async def python_query_smoke(ws_url: str) -> None:
+    client = WeepClient()
+    await client.connect(ws_url)
+    auth = AuthClient(client)
+    await auth.wait_for_greeting()
+    await auth.login_with_scram("admin", "admin")
+
+    qc = QueryClient(client)
+    await qc.open()
+    result = await qc.query("select * from station")
+    items = result.get("items", [])
+    if not isinstance(items, list) or len(items) == 0:
+        raise RunnerError("Query result did not return fixed array")
+
+    await qc.close()
+    await client.close()
+
+
 async def run_matrix() -> None:
     ensure_fixtures()
     csharp_port = 9643
@@ -156,6 +174,7 @@ async def run_matrix() -> None:
         print("[2/5] Python client against C# server")
         await python_client_smoke(f"ws://localhost:{csharp_port}/weep")
         await python_stream_smoke(f"ws://localhost:{csharp_port}/weep")
+        await python_query_smoke(f"ws://localhost:{csharp_port}/weep")
     finally:
         await stop_process(csharp_server)
 
@@ -189,6 +208,7 @@ async def run_matrix() -> None:
         print("[5/5] Python client against Python server")
         await python_client_smoke(f"ws://localhost:{python_port}/weep")
         await python_stream_smoke(f"ws://localhost:{python_port}/weep")
+        await python_query_smoke(f"ws://localhost:{python_port}/weep")
     finally:
         await stop_process(py_server)
 

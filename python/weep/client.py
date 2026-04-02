@@ -11,6 +11,7 @@ from websockets.client import WebSocketClientProtocol
 
 from .protocol import (
     PROFILE_FILE,
+    PROFILE_QUERY,
     PROFILE_STREAM,
     WeepError,
     dumps,
@@ -516,6 +517,63 @@ class StreamChannel:
             return await fut
         finally:
             self._pending.pop(msgno, None)
+
+    def _next_msgno(self) -> int:
+        self._msgno += 1
+        return self._msgno
+
+
+class QueryClient:
+    def __init__(self, client: WeepClient) -> None:
+        self._client = client
+        self._channel = -1
+        self._msgno = 0
+        self._pending: dict[int, asyncio.Future] = {}
+
+    async def open(self) -> None:
+        self._channel = await self._client.open_channel(PROFILE_QUERY, self)
+
+    async def close(self) -> None:
+        await self._client.close_channel(self._channel)
+
+    async def query(self, q: str) -> dict:
+        msgno = self._next_msgno()
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[msgno] = fut
+        await self._client.send_json(
+            {
+                "type": "MSG",
+                "channel": self._channel,
+                "msgno": msgno,
+                "payload": {
+                    "op": "query",
+                    "q": q,
+                },
+            },
+            priority=0,
+        )
+        try:
+            return await fut
+        finally:
+            self._pending.pop(msgno, None)
+
+    async def handle_text(self, node: dict) -> None:
+        msgno = int(node.get("msgno", -1))
+        fut = self._pending.get(msgno)
+        if fut is None:
+            return
+
+        payload = node.get("payload", {})
+        t = node.get("type")
+        if t == "RPY":
+            if not fut.done():
+                fut.set_result(payload)
+        elif t == "ERR":
+            if not fut.done():
+                fut.set_exception(WeepError(int(payload.get("code", 500)), str(payload.get("message", "Error"))))
+
+    async def handle_binary(self, _frame: bytes) -> None:
+        return
 
     def _next_msgno(self) -> int:
         self._msgno += 1
