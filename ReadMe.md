@@ -11,10 +11,6 @@ WEEP is also designed for unreliable and high-latency networks, including
 satellite links, modem-class connections, and VPN paths, with per-channel flow
 control and backpressure to keep sessions stable on poor lines.
 
-## Author
-
-Kato Ganagstad
-
 ## Easter vibe-coding note
 
 Some parts of this project were refined during Easter holiday vibe-coding.
@@ -95,3 +91,10 @@ Endpoints:
 - Protocol specification: `docs/protocol-spec.md`
 - C# usage: `csharp/README.md`
 - Python usage: `python/README.md`
+
+## TODO
+
+- ESP32 port
+- Pub/Sub on points
+- Niagara WEEP service (Fox service clone)
+- Niagra WEEP Network (Niagara Network clone)
