@@ -1,0 +1,912 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>weep File Browser</title>
+<style>
+  /* ── reset & base ──────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:      #0f1117;
+    --surface: #1c1f2e;
+    --panel:   #252840;
+    --border:  #33375a;
+    --accent:  #5b6af5;
+    --accent2: #38bdf8;
+    --green:   #34d399;
+    --red:     #f87171;
+    --text:    #e2e8f0;
+    --muted:   #6b7280;
+    --radius:  10px;
+    --font:    'Segoe UI', system-ui, sans-serif;
+  }
+  body { background: var(--bg); color: var(--text); font-family: var(--font);
+         font-size: 14px; min-height: 100vh; display: flex; flex-direction: column; }
+
+  /* ── layout ─────────────────────────────────────────────────── */
+  header { background: var(--surface); border-bottom: 1px solid var(--border);
+           padding: 14px 24px; display: flex; align-items: center; gap: 14px; }
+  header h1 { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+  header h1 span { color: var(--accent); }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%;
+                background: var(--muted); flex-shrink: 0; transition: background .3s; }
+  .status-dot.connected    { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.error        { background: var(--red); }
+  #status-text { font-size: 12px; color: var(--muted); }
+
+  main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── sidebar (connect) ───────────────────────────────────────── */
+  .sidebar { width: 280px; background: var(--surface); border-right: 1px solid var(--border);
+             padding: 20px; display: flex; flex-direction: column; gap: 14px; flex-shrink: 0; }
+  .sidebar h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
+                color: var(--muted); margin-bottom: 4px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  label { font-size: 12px; color: var(--muted); }
+  input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+          color: var(--text); padding: 8px 10px; font-size: 13px; outline: none;
+          transition: border-color .2s; }
+  input:focus { border-color: var(--accent); }
+  input[type=password] { letter-spacing: 2px; }
+  .btn { padding: 9px 16px; border-radius: 7px; border: none; cursor: pointer;
+         font-size: 13px; font-weight: 600; transition: opacity .15s, transform .1s; }
+  .btn:active { transform: scale(.97); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-primary  { background: var(--accent);  color: #fff; }
+  .btn-outline  { background: transparent; border: 1px solid var(--border);
+                  color: var(--text); }
+  .btn-green    { background: var(--green); color: #0f1117; }
+  .btn-red      { background: var(--red);   color: #0f1117; }
+  .btn-upload   { background: var(--accent2); color: #0f1117; }
+  .divider { height: 1px; background: var(--border); }
+
+  /* ── log panel ───────────────────────────────────────────────── */
+  .log-panel { flex: 1; overflow-y: auto; background: var(--bg);
+               border: 1px solid var(--border); border-radius: 7px;
+               padding: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace;
+               font-size: 11px; line-height: 1.6; max-height: 200px; }
+  .log-panel p   { border-bottom: 1px solid #1a1d2e; padding: 1px 4px; }
+  .log-panel .ok  { color: var(--green); }
+  .log-panel .err { color: var(--red); }
+  .log-panel .inf { color: var(--accent2); }
+
+  /* ── file browser ────────────────────────────────────────────── */
+  .browser { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .browser-toolbar { background: var(--panel); border-bottom: 1px solid var(--border);
+                     padding: 10px 18px; display: flex; align-items: center; gap: 10px;
+                     flex-wrap: wrap; }
+  .breadcrumb { display: flex; align-items: center; gap: 4px; flex: 1; flex-wrap: wrap; }
+  .breadcrumb span { color: var(--muted); }
+  .breadcrumb a { color: var(--accent2); cursor: pointer; text-decoration: none;
+                  font-weight: 600; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  #upload-input { display: none; }
+
+  .file-table-wrap { flex: 1; overflow-y: auto; padding: 16px 20px; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { text-align: left; padding: 8px 12px; font-size: 11px; text-transform: uppercase;
+             letter-spacing: .8px; color: var(--muted); border-bottom: 1px solid var(--border); }
+  tbody tr { cursor: pointer; border-radius: var(--radius); transition: background .12s; }
+  tbody tr:hover td { background: var(--panel); }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid #1a1d2e; }
+  tbody td:first-child { border-radius: 7px 0 0 7px; }
+  tbody td:last-child  { border-radius: 0 7px 7px 0; }
+  .icon { font-size: 16px; margin-right: 6px; }
+  .name-cell { display: flex; align-items: center; }
+  .size-cell, .mime-cell { color: var(--muted); font-size: 12px; }
+  .action-cell { display: flex; gap: 6px; justify-content: flex-end; }
+  .btn-sm { padding: 4px 10px; font-size: 11px; border-radius: 5px; }
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--muted); }
+
+  /* ── progress overlay ────────────────────────────────────────── */
+  #progress-bar-wrap { display: none; flex-direction: column; gap: 6px;
+                       padding: 10px 18px; background: var(--surface);
+                       border-bottom: 1px solid var(--border); }
+  #progress-label { font-size: 12px; color: var(--muted); }
+  .progress-track { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  #progress-fill  { height: 100%; background: var(--accent); border-radius: 3px;
+                    width: 0%; transition: width .1s linear; }
+
+  /* ── toast ───────────────────────────────────────────────────── */
+  #toast { position: fixed; bottom: 24px; right: 24px; background: var(--panel);
+           border: 1px solid var(--border); border-radius: 10px; padding: 12px 20px;
+           font-size: 13px; opacity: 0; transform: translateY(8px);
+           transition: opacity .25s, transform .25s; pointer-events: none; z-index: 999; }
+  #toast.show { opacity: 1; transform: translateY(0); }
+  #toast.ok  { border-color: var(--green); color: var(--green); }
+  #toast.err { border-color: var(--red);   color: var(--red); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="status-dot" id="dot"></div>
+  <h1><span>WEEP</span> File Browser</h1>
+  <span id="status-text">Disconnected</span>
+</header>
+
+<main>
+  <!-- ── sidebar ───────────────────────────────────────── -->
+  <aside class="sidebar">
+    <h2>Connection</h2>
+
+    <div class="field">
+      <label>Server URL</label>
+      <input id="url" value="ws://localhost:9443/weep" />
+    </div>
+    <div class="field">
+      <label>Username</label>
+      <input id="user" value="admin" />
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="pass" type="password" value="admin" />
+    </div>
+    <div class="field">
+      <label>Auth mechanism</label>
+      <select id="mechanism" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px 10px;font-size:13px;outline:none;">
+        <option value="auto">Auto (prefer SCRAM)</option>
+        <option value="auth:scram-sha256">auth:scram-sha256 (mutual)</option>
+        <option value="auth:challenge">auth:challenge (legacy)</option>
+      </select>
+    </div>
+
+    <button class="btn btn-primary" id="btn-connect">Connect</button>
+    <button class="btn btn-outline"  id="btn-disconnect" disabled>Disconnect</button>
+
+    <div class="divider"></div>
+    <h2>Activity Log</h2>
+    <div class="log-panel" id="log"></div>
+  </aside>
+
+  <!-- ── file browser ──────────────────────────────────── -->
+  <section class="browser">
+    <div class="browser-toolbar">
+      <div class="breadcrumb" id="breadcrumb">
+        <a onclick="navigate('/')">⌂ root</a>
+      </div>
+      <button class="btn btn-upload btn-sm" id="btn-upload" disabled>⬆ Upload here</button>
+      <input type="file" id="upload-input" multiple />
+    </div>
+
+    <div id="progress-bar-wrap">
+      <span id="progress-label">Uploading…</span>
+      <div class="progress-track"><div id="progress-fill"></div></div>
+    </div>
+
+    <div class="file-table-wrap">
+      <table id="file-table">
+        <thead>
+          <tr>
+            <th style="width:46%">Name</th>
+            <th style="width:14%">Size</th>
+            <th style="width:24%">MIME</th>
+            <th style="width:16%"></th>
+          </tr>
+        </thead>
+        <tbody id="file-body">
+          <tr><td colspan="4" class="empty-state">Not connected</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     weep JavaScript Client
+     ═══════════════════════════════════════════════════════════════════ -->
+<script>
+'use strict';
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+const HEADER_SIZE  = 7;
+const FLAG_FINAL   = 0x01;
+const FLAG_ACK     = 0x02;
+const WINDOW_SIZE  = 8;
+const PREFERRED_CHUNK = 65_536;   // ask server for max; server caps it
+const PRIORITY_HIGH   = 0;
+const PRIORITY_NORMAL = 1;
+const PRIORITY_LOW    = 2;
+
+// ─── SHA-256 helpers (Web Crypto API) ───────────────────────────────────────
+async function sha256hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ─── SendWindow (counting semaphore) ────────────────────────────────────────
+class SendWindow {
+  constructor(size) {
+    this._credits = size;
+    this._waiters = [];
+  }
+  acquire() {
+    if (this._credits > 0) { this._credits--; return Promise.resolve(); }
+    return new Promise(resolve => this._waiters.push(resolve));
+  }
+  release() {
+    if (this._waiters.length > 0) { this._waiters.shift()(); }
+    else this._credits++;
+  }
+}
+
+// ─── Priority send queue ─────────────────────────────────────────────────────
+// Three FIFO buckets; pump always drains High before Normal before Low.
+class PriorityQueue {
+  constructor() { this._q = [[], [], []]; this._waiters = []; }
+  enqueue(item, priority) {
+    this._q[priority].push(item);
+    if (this._waiters.length) this._waiters.shift()();
+  }
+  dequeue() {
+    for (const bucket of this._q) if (bucket.length) return bucket.shift();
+    return null;
+  }
+  get pending() { return this._q.reduce((s, b) => s + b.length, 0); }
+  wait() {
+    if (this.pending) return Promise.resolve();
+    return new Promise(r => this._waiters.push(r));
+  }
+}
+
+// ─── Binary frame helpers ────────────────────────────────────────────────────
+function encodeDataFrame(channel, seq, data, final) {
+  const buf = new Uint8Array(HEADER_SIZE + data.length);
+  buf[0] = (channel >> 8) & 0xff;
+  buf[1] =  channel       & 0xff;
+  buf[2] = (seq >> 24)    & 0xff;
+  buf[3] = (seq >> 16)    & 0xff;
+  buf[4] = (seq >>  8)    & 0xff;
+  buf[5] =  seq           & 0xff;
+  buf[6] = final ? FLAG_FINAL : 0;
+  buf.set(data, HEADER_SIZE);
+  return buf;
+}
+
+function encodeAckFrame(channel, seq) {
+  const buf = new Uint8Array(HEADER_SIZE);
+  buf[0] = (channel >> 8) & 0xff;
+  buf[1] =  channel       & 0xff;
+  buf[2] = (seq >> 24)    & 0xff;
+  buf[3] = (seq >> 16)    & 0xff;
+  buf[4] = (seq >>  8)    & 0xff;
+  buf[5] =  seq           & 0xff;
+  buf[6] = FLAG_ACK;
+  return buf;
+}
+
+function parseFrame(ab) {
+  const v = new DataView(ab);
+  const channel = v.getUint16(0);
+  const seq     = v.getUint32(2);
+  const flags   = v.getUint8(6);
+  const isAck   = (flags & FLAG_ACK)   !== 0 && ab.byteLength === HEADER_SIZE;
+  const isFinal = (flags & FLAG_FINAL) !== 0;
+  const data    = isAck ? null : new Uint8Array(ab, HEADER_SIZE);
+  return { channel, seq, isAck, isFinal, data };
+}
+
+// ─── WeepClient ────────────────────────────────────────────────────────────
+class WeepClient {
+  constructor() {
+    this._ws           = null;
+    this._channels     = new Map();   // channel → handler {onBinary, onText}
+    this._queue        = new PriorityQueue();
+    this._msgno        = 1;
+    this._nextChannel  = 1;
+    this.maxChunkSize  = PREFERRED_CHUNK;
+    this._pumpRunning  = false;
+  }
+
+  // ── Connect + auth ──────────────────────────────────────────────────────
+  connect(url) {
+    return new Promise((resolve, reject) => {
+      this._ws = new WebSocket(url);
+      this._ws.binaryType = 'arraybuffer';
+      // Start the send pump only AFTER the socket is open —
+      // readyState is CONNECTING (0) inside the constructor, so starting the
+      // pump here would immediately exit the while-loop and leave all queued
+      // messages stranded.
+      this._ws.onopen    = () => this._startPump();
+      this._ws.onmessage = e => this._onMessage(e);
+      this._ws.onclose   = () => { if (this._connected) { log('Connection closed', 'err'); setConnected(false); this._connected = false; } };
+      this._ws.onerror   = () => reject(new Error('WebSocket error — is the server running?'));
+
+      // Wait for greeting
+      const onGreeting = json => {
+        const p = json.payload;
+        this.maxChunkSize   = p.maxChunkSize ?? PREFERRED_CHUNK;
+        this._serverNonce   = p.serverNonce  ?? null;
+        this._authMechanisms = p.auth        ?? [];
+        log(`Greeting — v${p.version ?? '?'} "${p.productName ?? 'weep'}" ` +
+            `maxChunk=${this.maxChunkSize} auth=[${this._authMechanisms.join(', ')}]` +
+            (this._serverNonce ? ' nonce=✓' : ''), 'inf');
+        this._connected = true;
+        resolve();
+      };
+      this._greetingCb = onGreeting;
+    });
+  }
+
+  async loginWithChallenge(username, password) {
+    // Step 1 — request challenge
+    const rpy1 = await this._sendMgmt({ mechanism: 'auth:challenge', username });
+    const challenge = rpy1.challenge;
+    log(`Challenge received: ${challenge.slice(0, 8)}…`, 'inf');
+
+    // Step 2 — compute and send response
+    const pH       = await sha256hex(password);
+    const response = await sha256hex(`${username}:${challenge}:${pH}`);
+    const rpy2 = await this._sendMgmt({ mechanism: 'auth:challenge', username, response });
+    log(`Authenticated as "${rpy2.username}" roles=[${rpy2.roles?.join(', ')}]`, 'ok');
+    return rpy2;
+  }
+
+  async loginWithScram(username, password) {
+    // The serverNonce was stored when we received the greeting
+    const serverNonce = this._serverNonce;
+    if (!serverNonce) throw new Error('No serverNonce in greeting — server may not support SCRAM');
+
+    // Generate client nonce (16 random bytes → hex)
+    const clientNonceBytes = new Uint8Array(16);
+    crypto.getRandomValues(clientNonceBytes);
+    const clientNonce = Array.from(clientNonceBytes).map(b => b.toString(16).padStart(2,'0')).join('');
+
+    // Step 1 — send clientNonce, receive combinedNonce + serverProof
+    log(`SCRAM step 1 — clientNonce=${clientNonce.slice(0,8)}…`, 'inf');
+    const rpy1 = await this._sendMgmt({ mechanism: 'auth:scram-sha256', username, clientNonce });
+    const { combinedNonce, serverProof: receivedServerProof } = rpy1;
+
+    // Derive sharedKey and verify serverProof (MUTUAL AUTH)
+    const pH        = await sha256hex(password);
+    const sharedKey = await sha256hex(pH + ':' + combinedNonce);
+    const expectedServerProof = await sha256hex('server:' + sharedKey);
+    if (expectedServerProof !== receivedServerProof) {
+      throw new Error('Server proof mismatch — possible impostor server!');
+    }
+    log(`SCRAM server verified ✓ — combinedNonce=${combinedNonce.slice(0,12)}…`, 'inf');
+
+    // Step 2 — send clientProof
+    const clientProof = await sha256hex('client:' + sharedKey);
+    const rpy2 = await this._sendMgmt({ mechanism: 'auth:scram-sha256', username, clientProof });
+    log(`SCRAM authenticated as "${rpy2.username}" roles=[${rpy2.roles?.join(', ')}]`, 'ok');
+    return rpy2;
+  }
+
+  disconnect() {
+    this._ws?.close();
+    this._ws = null;
+  }
+
+  // ── Channel management ──────────────────────────────────────────────────
+  async openFileChannel(preferredChunkSize = PREFERRED_CHUNK) {
+    const channel = this._nextChannel++;
+    // Will be replaced by proper handler once we get the ok
+    this._channels.set(channel, { onBinary: null, onText: null, msgHandlers: new Map() });
+    await this._sendStart(channel, 'weep:file', preferredChunkSize);
+    log(`Opened weep:file channel ${channel}`, 'ok');
+    return new FileChannel(this, channel,
+      Math.min(preferredChunkSize, this.maxChunkSize));
+  }
+
+  // ── Internal — send management MSG on channel 0 ─────────────────────────
+  _sendMgmt(payload) {
+    const msgno = this._msgno++;
+    return new Promise((resolve, reject) => {
+      if (!this._mgmtHandlers) this._mgmtHandlers = new Map();
+      this._mgmtHandlers.set(msgno, { resolve, reject });
+      this._sendJson({ type: 'MSG', channel: 0, msgno, payload });
+    });
+  }
+
+  _sendStart(channel, profile, chunkSize) {
+    const msgno = this._msgno++;
+    return new Promise((resolve, reject) => {
+      if (!this._mgmtHandlers) this._mgmtHandlers = new Map();
+      this._mgmtHandlers.set(msgno, { resolve, reject });
+      this._sendJson({ type: 'start', channel: 0, msgno,
+        payload: { channel, profile, chunkSize } });
+    });
+  }
+
+  // ── Internal — enqueue / pump ───────────────────────────────────────────
+  _sendJson(obj) {
+    this._queue.enqueue({ str: JSON.stringify(obj), type: 'text' }, PRIORITY_HIGH);
+    this._wake();
+  }
+
+  sendBinary(bytes, priority) {
+    this._queue.enqueue({ bytes, type: 'binary' }, priority);
+    this._wake();
+  }
+
+  _wake() { if (this._pumpWaker) { this._pumpWaker(); this._pumpWaker = null; } }
+
+  _startPump() {
+    if (this._pumpRunning) return;
+    this._pumpRunning = true;
+    this._pump();
+  }
+
+  async _pump() {
+    while (this._ws && this._ws.readyState === WebSocket.OPEN) {
+      const item = this._queue.dequeue();
+      if (!item) {
+        await new Promise(r => { this._pumpWaker = r; });
+        continue;
+      }
+      if (this._ws.readyState !== WebSocket.OPEN) break;
+      if (item.type === 'text') this._ws.send(item.str);
+      else                      this._ws.send(item.bytes.buffer ?? item.bytes);
+    }
+    this._pumpRunning = false;
+  }
+
+  // ── Internal — receive ──────────────────────────────────────────────────
+  _onMessage(e) {
+    if (typeof e.data === 'string') {
+      this._onText(JSON.parse(e.data));
+    } else {
+      this._onBinary(e.data);
+    }
+  }
+
+  _onText(msg) {
+    const { type, channel, msgno, payload } = msg;
+
+    // Greeting (channel 0, before auth)
+    if (type === 'greeting') { this._greetingCb?.(msg); return; }
+
+    // Management replies (ok / ERR / RPY on channel 0 for auth)
+    if (channel === 0) {
+      const h = this._mgmtHandlers?.get(msgno);
+      if (h) {
+        this._mgmtHandlers.delete(msgno);
+        if (type === 'ERR') h.reject(new Error(`${payload.code}: ${payload.message}`));
+        else                h.resolve(payload);
+      }
+      return;
+    }
+
+    // Application channel text frames
+    const ch = this._channels.get(channel);
+    if (ch) ch.onText?.(msg);
+  }
+
+  _onBinary(ab) {
+    const frame = parseFrame(ab);
+    const ch = this._channels.get(frame.channel);
+    if (ch) ch.onBinary?.(frame);
+  }
+}
+
+// ─── FileChannel ─────────────────────────────────────────────────────────────
+class FileChannel {
+  constructor(client, channel, chunkSize) {
+    this._client    = client;
+    this._channel   = channel;
+    this._chunkSize = chunkSize;
+    this._msgno     = 1;
+    this._pending   = new Map();    // msgno → {resolve, reject}
+    this._download  = null;         // active DownloadState
+    this._earlyBin  = [];           // frames before download state is ready
+    this._uploadWin = null;
+
+    // Wire up channel callbacks
+    client._channels.get(channel).onText   = msg => this._onText(msg);
+    client._channels.get(channel).onBinary = frame => this._onBinary(frame);
+  }
+
+  // ── Browse ──────────────────────────────────────────────────────────────
+  async list(path = '/') {
+    return this._rpc({ op: 'list', path });
+  }
+
+  async stat(path) {
+    return this._rpc({ op: 'stat', path });
+  }
+
+  // ── Upload ──────────────────────────────────────────────────────────────
+  async upload(file, remotePath, onProgress) {
+    const rpy = await this._rpc({ op: 'upload', path: remotePath,
+                                   size: file.size, mime: file.type || 'application/octet-stream' });
+    const chunkSize = rpy.chunkSize ?? this._chunkSize;
+
+    // Pre-register final-RPY handler (same msgno as the upload request)
+    const confirmMsgno = this._msgno - 1;   // _rpc just incremented it
+    const confirmP = new Promise((res, rej) => this._pending.set(confirmMsgno, { resolve: res, reject: rej }));
+
+    const window = new SendWindow(WINDOW_SIZE);
+    this._uploadWin = window;
+
+    let bytesSent = 0;
+    let seq       = 0;
+    const buf     = new Uint8Array(chunkSize);
+    const reader  = file.stream().getReader();
+    let   leftover = new Uint8Array(0);
+
+    try {
+      outer: while (true) {
+        // Fill buf from reader (handles chunks smaller than chunkSize)
+        let filled = 0;
+        if (leftover.length) {
+          const take = Math.min(leftover.length, chunkSize);
+          buf.set(leftover.subarray(0, take));
+          filled    = take;
+          leftover  = leftover.subarray(take);
+        }
+        while (filled < chunkSize) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const remaining = chunkSize - filled;
+          if (value.length <= remaining) {
+            buf.set(value, filled);
+            filled += value.length;
+          } else {
+            buf.set(value.subarray(0, remaining), filled);
+            leftover = value.subarray(remaining);
+            filled   = chunkSize;
+            break;
+          }
+        }
+        if (filled === 0) break;
+
+        const final = filled < chunkSize && leftover.length === 0 &&
+                      bytesSent + filled >= file.size;
+        const chunk = buf.slice(0, filled);
+
+        await window.acquire();
+        const frame = encodeDataFrame(this._channel, seq, chunk, final || bytesSent + filled >= file.size);
+        this._client.sendBinary(frame, PRIORITY_LOW);
+
+        bytesSent += filled;
+        seq++;
+        onProgress?.(bytesSent / file.size);
+
+        if (bytesSent >= file.size) break;
+      }
+    } finally {
+      this._uploadWin = null;
+    }
+
+    return confirmP;
+  }
+
+  // ── Download ─────────────────────────────────────────────────────────────
+  async download(remotePath, onProgress) {
+    // Pre-register download state BEFORE sending request
+    let resolveDownload, rejectDownload;
+    const chunks = [];
+    const state = {
+      resolve : v => resolveDownload(v),
+      reject  : e => rejectDownload(e),
+      chunks,
+      onProgress,
+      totalSize : 0,
+      received  : 0,
+    };
+    this._download = state;
+    const p = new Promise((res, rej) => { resolveDownload = res; rejectDownload = rej; });
+
+    const rpy = await this._rpc({ op: 'download', path: remotePath });
+    state.totalSize = rpy.size;
+    log(`Downloading "${remotePath}" ${fmtSize(rpy.size)}`, 'inf');
+
+    // Drain any frames that arrived before this point
+    for (const frame of this._earlyBin) this._deliverFrame(frame);
+    this._earlyBin = [];
+
+    return p;
+  }
+
+  // ── Internal ─────────────────────────────────────────────────────────────
+  async _rpc(payload) {
+    const msgno = this._msgno++;
+    return new Promise((resolve, reject) => {
+      this._pending.set(msgno, { resolve, reject });
+      this._client._sendJson({ type: 'MSG', channel: this._channel, msgno, payload });
+    });
+  }
+
+  _onText(msg) {
+    const { type, msgno, payload } = msg;
+    const h = this._pending.get(msgno);
+    if (!h) return;
+    this._pending.delete(msgno);
+    if (type === 'ERR') h.reject(new Error(`${payload.code}: ${payload.message}`));
+    else                h.resolve(payload);
+  }
+
+  _onBinary(frame) {
+    if (frame.isAck) {
+      this._uploadWin?.release();
+      return;
+    }
+    // ACK this download frame back to the server at High priority
+    const ack = encodeAckFrame(this._channel, frame.seq);
+    this._client.sendBinary(ack, PRIORITY_HIGH);
+
+    if (this._download) this._deliverFrame(frame);
+    else                this._earlyBin.push(frame);
+  }
+
+  _deliverFrame(frame) {
+    const s = this._download;
+    if (!s) return;
+    s.chunks.push(frame.data.slice());   // copy before GC
+    s.received += frame.data.length;
+    s.onProgress?.(s.received / s.totalSize);
+    if (frame.isFinal) {
+      this._download = null;
+      s.resolve(s.chunks);
+    }
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  UI
+// ═════════════════════════════════════════════════════════════════════════════
+let client    = null;
+let fileCh    = null;
+let currentPath = '/';
+
+// ── DOM refs ────────────────────────────────────────────────────────────────
+const dot          = document.getElementById('dot');
+const statusText   = document.getElementById('status-text');
+const btnConnect   = document.getElementById('btn-connect');
+const btnDisconnect= document.getElementById('btn-disconnect');
+const btnUpload    = document.getElementById('btn-upload');
+const uploadInput  = document.getElementById('upload-input');
+const logEl        = document.getElementById('log');
+const fileBody     = document.getElementById('file-body');
+const breadcrumb   = document.getElementById('breadcrumb');
+const progressWrap = document.getElementById('progress-bar-wrap');
+const progressFill = document.getElementById('progress-fill');
+const progressLbl  = document.getElementById('progress-label');
+const toast        = document.getElementById('toast');
+
+// ── Utilities ────────────────────────────────────────────────────────────────
+function log(msg, cls = '') {
+  const p = document.createElement('p');
+  p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  if (cls) p.className = cls;
+  logEl.appendChild(p);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function showToast(msg, type = 'ok') {
+  toast.textContent = msg;
+  toast.className   = `show ${type}`;
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => { toast.className = ''; }, 3000);
+}
+
+function fmtSize(bytes) {
+  if (bytes === 0) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024**2) return `${(bytes/1024).toFixed(1)} KB`;
+  if (bytes < 1024**3) return `${(bytes/1024**2).toFixed(2)} MB`;
+  return `${(bytes/1024**3).toFixed(2)} GB`;
+}
+
+function setConnected(yes) {
+  dot.className          = 'status-dot' + (yes ? ' connected' : '');
+  statusText.textContent = yes ? 'Connected' : 'Disconnected';
+  btnConnect.disabled    = yes;
+  btnDisconnect.disabled = !yes;
+  btnUpload.disabled     = !yes;
+  if (!yes) renderEmpty('Disconnected');
+}
+
+function setProgress(label, pct) {
+  if (pct === null) { progressWrap.style.display = 'none'; return; }
+  progressWrap.style.display = 'flex';
+  progressLbl.textContent    = label;
+  progressFill.style.width   = `${Math.round(pct * 100)}%`;
+}
+
+// ── Breadcrumb ───────────────────────────────────────────────────────────────
+function renderBreadcrumb(path) {
+  const parts = path.replace(/^\//, '').split('/').filter(Boolean);
+  breadcrumb.innerHTML = '';
+  const rootA = document.createElement('a');
+  rootA.textContent = '⌂ root';
+  rootA.onclick = () => navigate('/');
+  breadcrumb.appendChild(rootA);
+  let built = '';
+  for (const part of parts) {
+    built += '/' + part;
+    const sep = document.createElement('span'); sep.textContent = '/';
+    breadcrumb.appendChild(sep);
+    const a = document.createElement('a');
+    a.textContent = part;
+    const p = built;
+    a.onclick = () => navigate(p);
+    breadcrumb.appendChild(a);
+  }
+}
+
+// ── File table ───────────────────────────────────────────────────────────────
+function renderEmpty(msg) {
+  fileBody.innerHTML = `<tr><td colspan="4" class="empty-state">${msg}</td></tr>`;
+}
+
+function renderEntries(entries) {
+  if (!entries.length) { renderEmpty('Empty folder'); return; }
+  fileBody.innerHTML = '';
+  for (const e of entries) {
+    const isDir  = e.type === 'dir';
+    const icon   = isDir ? '📁' : iconForMime(e.mime);
+    const tr     = document.createElement('tr');
+    tr.innerHTML = `
+      <td><div class="name-cell"><span class="icon">${icon}</span>${e.name}</div></td>
+      <td class="size-cell">${isDir ? '—' : fmtSize(e.size)}</td>
+      <td class="mime-cell">${isDir ? '' : (e.mime ?? '')}</td>
+      <td class="action-cell">
+        ${isDir  ? `<button class="btn btn-outline btn-sm" data-open="${e.path}">Open</button>` : ''}
+        ${!isDir ? `<button class="btn btn-green btn-sm"   data-dl="${e.path}" data-name="${e.name}">⬇ Download</button>` : ''}
+        ${!isDir ? `<button class="btn btn-red btn-sm"    data-dl-view="${e.path}" data-name="${e.name}">👁 Preview</button>` : ''}
+      </td>`;
+    tr.addEventListener('dblclick', () => {
+      if (isDir) navigate(e.path);
+    });
+    fileBody.appendChild(tr);
+  }
+
+  // Delegate button clicks
+  fileBody.addEventListener('click', onTableClick, { once: true });
+  // Re-attach next render cycle — once:true means we need to re-add every time
+  // Actually just use bubbled listener on tbody permanently:
+}
+
+function iconForMime(mime = '') {
+  if (mime.startsWith('image/'))       return '🖼';
+  if (mime.startsWith('text/'))        return '📄';
+  if (mime.startsWith('audio/'))       return '🎵';
+  if (mime.startsWith('video/'))       return '🎬';
+  if (mime.includes('json'))           return '📋';
+  if (mime.includes('pdf'))            return '📕';
+  if (mime.includes('zip') || mime.includes('gzip')) return '🗜';
+  return '📦';
+}
+
+// Table click (delegated permanently on tbody)
+fileBody.addEventListener('click', onTableClick);
+function onTableClick(e) {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  if (btn.dataset.open)    navigate(btn.dataset.open);
+  if (btn.dataset.dl)      downloadFile(btn.dataset.dl, btn.dataset.name, false);
+  if (btn.dataset.dlView)  downloadFile(btn.dataset.dlView, btn.dataset.name, true);
+}
+
+// ── Navigate ─────────────────────────────────────────────────────────────────
+async function navigate(path) {
+  if (!fileCh) return;
+  currentPath = path;
+  renderBreadcrumb(path);
+  renderEmpty('Loading…');
+  try {
+    const res = await fileCh.list(path);
+    renderEntries(res.entries ?? []);
+    log(`Listed "${path}" — ${res.entries?.length ?? 0} entries`, 'ok');
+  } catch (err) {
+    renderEmpty(`Error: ${err.message}`);
+    log(`List error: ${err.message}`, 'err');
+  }
+}
+
+// ── Download ─────────────────────────────────────────────────────────────────
+async function downloadFile(path, name, preview) {
+  log(`Downloading "${path}"…`, 'inf');
+  setProgress(`Downloading ${name}…`, 0);
+  try {
+    const chunks = await fileCh.download(path, p => setProgress(`Downloading ${name}…`, p));
+    setProgress(null);
+
+    // Reassemble into a single Blob
+    const total = chunks.reduce((s, c) => s + c.length, 0);
+    const full  = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { full.set(c, off); off += c.length; }
+    const blob = new Blob([full]);
+
+    if (preview) {
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      showToast(`Opened preview: ${name}`);
+    } else {
+      const a  = document.createElement('a');
+      a.href   = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      showToast(`Downloaded: ${name}`);
+    }
+    log(`Downloaded "${path}" ${fmtSize(total)}`, 'ok');
+  } catch (err) {
+    setProgress(null);
+    log(`Download error: ${err.message}`, 'err');
+    showToast(`Error: ${err.message}`, 'err');
+  }
+}
+
+// ── Upload ────────────────────────────────────────────────────────────────────
+btnUpload.addEventListener('click', () => uploadInput.click());
+uploadInput.addEventListener('change', async () => {
+  const files = [...uploadInput.files];
+  uploadInput.value = '';
+  if (!files.length || !fileCh) return;
+
+  for (const file of files) {
+    const remotePath = currentPath.replace(/\/$/, '') + '/' + file.name;
+    log(`Uploading "${file.name}" → "${remotePath}" (${fmtSize(file.size)})`, 'inf');
+    setProgress(`Uploading ${file.name}…`, 0);
+    try {
+      await fileCh.upload(file, remotePath, p => setProgress(`Uploading ${file.name}…`, p));
+      setProgress(null);
+      log(`Uploaded "${file.name}"`, 'ok');
+      showToast(`Uploaded: ${file.name}`);
+    } catch (err) {
+      setProgress(null);
+      log(`Upload error: ${err.message}`, 'err');
+      showToast(`Upload failed: ${err.message}`, 'err');
+    }
+  }
+  // Refresh listing
+  await navigate(currentPath);
+});
+
+// ── Connect / Disconnect ──────────────────────────────────────────────────────
+btnConnect.addEventListener('click', async () => {
+  const url       = document.getElementById('url').value.trim();
+  const user      = document.getElementById('user').value.trim();
+  const pass      = document.getElementById('pass').value;
+  const mechSel   = document.getElementById('mechanism').value;
+
+  btnConnect.disabled = true;
+  log(`Connecting to ${url}…`, 'inf');
+
+  try {
+    client = new WeepClient();
+    await client.connect(url);
+
+    // Resolve mechanism: 'auto' → prefer scram if server supports it
+    let mech = mechSel;
+    if (mech === 'auto') {
+      mech = client._authMechanisms.includes('auth:scram-sha256')
+           ? 'auth:scram-sha256' : 'auth:challenge';
+      log(`Auto-selected mechanism: ${mech}`, 'inf');
+    }
+
+    if (mech === 'auth:scram-sha256') {
+      await client.loginWithScram(user, pass);
+    } else {
+      await client.loginWithChallenge(user, pass);
+    }
+
+    fileCh = await client.openFileChannel(PREFERRED_CHUNK);
+    setConnected(true);
+    showToast('Connected!');
+    await navigate('/');
+  } catch (err) {
+    log(`Connection failed: ${err.message}`, 'err');
+    showToast(`Failed: ${err.message}`, 'err');
+    client?.disconnect();
+    client = null; fileCh = null;
+    btnConnect.disabled = false;
+  }
+});
+
+btnDisconnect.addEventListener('click', () => {
+  client?.disconnect();
+  client = null; fileCh = null;
+  setConnected(false);
+  showToast('Disconnected', 'err');
+  log('Disconnected by user');
+});
+</script>
+</body>
+</html>
