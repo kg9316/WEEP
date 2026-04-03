@@ -19,6 +19,7 @@ public sealed class ServerSession
 {
     private readonly WebSocket                _ws;
     private readonly bool                     _requireAuth;
+    private readonly string                   _filesRoot;
     private readonly Dictionary<int, object>  _channels   = new();
     // Tiebreaker (long) ensures FIFO order within the same priority level —
     // .NET PriorityQueue does NOT guarantee insertion order for equal-priority items.
@@ -29,10 +30,13 @@ public sealed class ServerSession
     private readonly string                    _serverNonce;
     private readonly ServerAuthHandler         _authHandler;
 
-    public ServerSession(WebSocket ws, UserStore userStore, bool requireAuth = true)
+    public ServerSession(WebSocket ws, UserStore userStore, bool requireAuth = true, string? filesRoot = null)
     {
         _ws          = ws;
         _requireAuth = requireAuth;
+        _filesRoot   = string.IsNullOrWhiteSpace(filesRoot)
+            ? Path.GetFullPath("files")
+            : Path.GetFullPath(filesRoot);
         _serverNonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16))
                              .ToLowerInvariant();
         _authHandler = new ServerAuthHandler(SendJsonAsync, userStore, _serverNonce);
@@ -209,7 +213,8 @@ public sealed class ServerSession
             P.File   => new ServerFileProfile(channelId.Value, SendJsonAsync,
                             data => EnqueueBinary(data, SendPriority.Low),
                             ack  => EnqueueBinary(ack,  SendPriority.High),
-                            negotiatedChunkSize),
+                            negotiatedChunkSize,
+                            _filesRoot),
             P.Stream => new ServerStreamProfile(channelId.Value, SendJsonAsync,
                             data => EnqueueBinary(data, SendPriority.Normal)),
             P.Query  => new ServerQueryProfile(channelId.Value, SendJsonAsync),

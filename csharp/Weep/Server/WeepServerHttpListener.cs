@@ -34,6 +34,31 @@ public sealed class WeepServerHttpListener
 
     private HttpListener? _listener;
     private WeepMdnsAdvertiser? _mdnsAdvertiser;
+    private string _htmlFile = Path.Combine(Environment.CurrentDirectory, "js", "index.html");
+    private string _filesRoot = Path.GetFullPath("files");
+
+    private static string ResolveRepoRoot()
+    {
+        var roots = new[]
+        {
+            new DirectoryInfo(Environment.CurrentDirectory),
+            new DirectoryInfo(AppContext.BaseDirectory),
+        };
+
+        foreach (var start in roots)
+        {
+            var dir = start;
+            for (int i = 0; i < 12 && dir != null; i++, dir = dir.Parent)
+            {
+                var hasFiles = Directory.Exists(Path.Combine(dir.FullName, "files"));
+                var hasJs = File.Exists(Path.Combine(dir.FullName, "js", "index.html"));
+                if (hasFiles && hasJs)
+                    return dir.FullName;
+            }
+        }
+
+        return Environment.CurrentDirectory;
+    }
 
     // ------------------------------------------------------------------
     // Start
@@ -45,6 +70,11 @@ public sealed class WeepServerHttpListener
         // Seed default accounts if the store is empty
         UserStore.AddUser("admin", "admin", "admin", "read", "write");
         UserStore.AddUser("guest", "guest", "read");
+
+        var repoRoot = ResolveRepoRoot();
+        _htmlFile = Path.Combine(repoRoot, "js", "index.html");
+        _filesRoot = Path.Combine(repoRoot, "files");
+        Directory.CreateDirectory(_filesRoot);
 
         // On Linux/Mac, use "+" instead of "localhost" to bind all interfaces,
         // e.g. "http://+:9443/weep/".  "localhost" binds loopback on all platforms.
@@ -125,7 +155,28 @@ public sealed class WeepServerHttpListener
                     authMechanisms = s.AuthMechanisms,
                     addresses = s.Addresses,
                     wsUrl = s.BuildWebSocketUrl(),
-                });
+                }).ToList();
+
+                var localPort = ctx.Request.LocalEndPoint?.Port ?? 0;
+                if (!payload.Any(s => s.port == localPort && s.path == "/weep"))
+                {
+                    var selfAddresses = Dns.GetHostAddresses(Dns.GetHostName())
+                        .Where(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                        .Select(ip => ip.ToString())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    payload.Add(new
+                    {
+                        instanceName = (DiscoveryInstanceName ?? $"{Environment.MachineName}-weep") + "._weep._tcp.local",
+                        hostName = Environment.MachineName,
+                        port = localPort,
+                        path = "/weep",
+                        version = "1.2",
+                        authMechanisms = (IReadOnlyList<string>)new[] { "auth:scram-sha256" },
+                        addresses = (IReadOnlyList<string>)selfAddresses,
+                        wsUrl = $"ws://{(selfAddresses.FirstOrDefault() ?? "localhost")}:{localPort}/weep",
+                    });
+                }
 
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
                 ctx.Response.ContentType = "application/json; charset=utf-8";
@@ -138,11 +189,9 @@ public sealed class WeepServerHttpListener
 
             if (ctx.Request.HttpMethod == "GET" && isWeep)
             {
-                var htmlFile = Path.Combine(
-                    Directory.GetCurrentDirectory(), "js", "index.html");
-                if (File.Exists(htmlFile))
+                if (File.Exists(_htmlFile))
                 {
-                    var html  = await File.ReadAllTextAsync(htmlFile, ct);
+                    var html  = await File.ReadAllTextAsync(_htmlFile, ct);
                     var bytes = Encoding.UTF8.GetBytes(html);
                     ctx.Response.ContentType     = "text/html; charset=utf-8";
                     ctx.Response.ContentLength64 = bytes.Length;
@@ -169,7 +218,7 @@ public sealed class WeepServerHttpListener
         var remote = ctx.Request.RemoteEndPoint;
         Console.WriteLine($"[weep] Connected: {remote}");
 
-        var session = new ServerSession(wsCtx.WebSocket, UserStore, RequireAuth);
+        var session = new ServerSession(wsCtx.WebSocket, UserStore, RequireAuth, _filesRoot);
         try
         {
             await session.RunAsync(ct);

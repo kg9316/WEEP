@@ -276,7 +276,7 @@ const PRIORITY_HIGH   = 0;
 const PRIORITY_NORMAL = 1;
 const PRIORITY_LOW    = 2;
 
-// ─── Crypto helpers (Web Crypto API) ───────────────────────────────────────
+// ─── Crypto helpers (Web Crypto API + CryptoJS fallback) ───────────────────
 function bytesToHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -290,10 +290,31 @@ function hexToBytes(hex) {
   return out;
 }
 
+function getSubtleCrypto() {
+  return window.crypto?.subtle || null;
+}
+
+function hasCryptoJs() {
+  return typeof window.CryptoJS !== 'undefined';
+}
+
 async function pbkdf2Hex(password, saltHex, iterations, keyLenBytes = 32) {
+  const subtle = getSubtleCrypto();
+  if (!subtle) {
+    if (!hasCryptoJs()) {
+      throw new Error('No crypto backend available for SCRAM');
+    }
+    const key = window.CryptoJS.PBKDF2(password, window.CryptoJS.enc.Hex.parse(saltHex), {
+      keySize: keyLenBytes / 4,
+      iterations,
+      hasher: window.CryptoJS.algo.SHA256,
+    });
+    return key.toString(window.CryptoJS.enc.Hex);
+  }
+
   const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits(
+  const keyMaterial = await subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await subtle.deriveBits(
     {
       name: 'PBKDF2',
       hash: 'SHA-256',
@@ -307,15 +328,27 @@ async function pbkdf2Hex(password, saltHex, iterations, keyLenBytes = 32) {
 }
 
 async function hmacHex(keyHex, input) {
+  const subtle = getSubtleCrypto();
+  if (!subtle) {
+    if (!hasCryptoJs()) {
+      throw new Error('No crypto backend available for SCRAM');
+    }
+    const mac = window.CryptoJS.HmacSHA256(
+      input,
+      window.CryptoJS.enc.Hex.parse(keyHex),
+    );
+    return mac.toString(window.CryptoJS.enc.Hex);
+  }
+
   const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
+  const key = await subtle.importKey(
     'raw',
     hexToBytes(keyHex),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(input));
+  const sig = await subtle.sign('HMAC', key, enc.encode(input));
   return bytesToHex(new Uint8Array(sig));
 }
 
@@ -726,6 +759,9 @@ class FileChannel {
     const h = this._pending.get(msgno);
     if (!h) return;
     this._pending.delete(msgno);
+    if (type !== 'ERR') {
+      log(`file#${this._channel} RPY msgno=${msgno} keys=[${Object.keys(payload || {}).join(', ')}]`, 'inf');
+    }
     if (type === 'ERR') h.reject(new Error(`${payload.code}: ${payload.message}`));
     else                h.resolve(payload);
   }
@@ -784,6 +820,9 @@ class QueryChannel {
     const h = this._pending.get(msgno);
     if (!h) return;
     this._pending.delete(msgno);
+    if (type !== 'ERR') {
+      log(`query#${this._channel} RPY msgno=${msgno} keys=[${Object.keys(payload || {}).join(', ')}]`, 'inf');
+    }
     if (type === 'ERR') h.reject(new Error(`${payload.code}: ${payload.message}`));
     else                h.resolve(payload);
   }
@@ -824,7 +863,7 @@ const urlInput     = document.getElementById('url');
 // Default WebSocket URL tracks where the UI is hosted.
 (() => {
   const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  urlInput.value = `${wsScheme}://${window.location.host}/weep`;
+  urlInput.value = `${wsScheme}://${window.location.hostname}:81`;
 })();
 
 function rankAddress(addr, allowLoopback) {
@@ -843,6 +882,10 @@ function pickPreferredAddress(addresses, allowLoopback) {
   const uniq = [...new Set(addresses.filter(Boolean))];
   uniq.sort((a, b) => rankAddress(a, allowLoopback) - rankAddress(b, allowLoopback));
   return uniq[0] || null;
+}
+
+function isLoopbackHost(host) {
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
 }
 
 async function refreshDiscoveredServers() {
@@ -868,10 +911,14 @@ async function refreshDiscoveredServers() {
     for (const item of list) {
       const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
       const pageHost = window.location.hostname;
-      const allowLoopback = pageHost === 'localhost' || pageHost === '127.0.0.1';
+      const allowLoopback = isLoopbackHost(pageHost);
       const preferredAddr = pickPreferredAddress(item.addresses || [], allowLoopback);
-      const host = preferredAddr || item.hostName || pageHost;
-      const wsUrl = `${wsScheme}://${host}:${item.port}${item.path || '/weep'}`;
+      let host = preferredAddr || item.hostName || pageHost;
+      if (allowLoopback && isLoopbackHost(host)) {
+        host = pageHost;
+      }
+      const wsPath = item.path || '/';
+      const wsUrl = `${wsScheme}://${host}:${item.port}${wsPath === '/' ? '' : wsPath}`;
       const instance = (item.instanceName || 'weep').replace('._weep._tcp.local', '');
       const label = `${instance} (${host}:${item.port})`;
       const opt = document.createElement('option');
@@ -1050,6 +1097,7 @@ async function navigate(path) {
   renderEmpty('Loading…');
   try {
     const res = await fileCh.list(path);
+    log(`List payload keys: ${Object.keys(res || {}).join(', ')}`, 'inf');
     renderEntries(res.entries ?? []);
     log(`Listed "${path}" — ${res.entries?.length ?? 0} entries`, 'ok');
   } catch (err) {
@@ -1133,6 +1181,7 @@ btnRunQuery.addEventListener('click', async () => {
   queryResult.textContent = 'Running query...';
   try {
     const res = await queryCh.query(q);
+    log(`Query payload keys: ${Object.keys(res || {}).join(', ')}`, 'inf');
     queryResult.textContent = JSON.stringify(res, null, 2);
     log(`Query ok (${q.length} chars)`, 'ok');
   } catch (err) {
@@ -1211,5 +1260,6 @@ btnDisconnect.addEventListener('click', () => {
   log('Disconnected by user');
 });
 </script>
+<script src="/vendor/crypto-js.min.js"></script>
 </body>
 </html>

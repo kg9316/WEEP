@@ -22,6 +22,7 @@ This repository includes:
 - C# reference implementation (server, client, examples)
 - Python port (server, client, compatibility tests)
 - Browser UI for testing file/query workflows
+- ESP32-POE implementation (SCRAM auth, file/query profiles, mDNS discovery)
 - LAN discovery with mDNS/DNS-SD and an HTTP discovery API
 
 ## Background: BEEP and FOX
@@ -52,6 +53,7 @@ WEEP is intentionally path-scoped under `/weep` so it can coexist with existing 
 
 - `csharp/` - .NET projects and libraries
 - `python/` - Python implementation and tests
+- `esp32-poe/` - PlatformIO ESP32-POE implementation (HTTP UI + WEEP WS server)
 - `js/` - Browser UI (`index.html`)
 - `docs/` - Detailed protocol and implementation documentation
 
@@ -91,10 +93,10 @@ Endpoints:
 - Protocol specification: `docs/protocol-spec.md`
 - C# usage: `csharp/README.md`
 - Python usage: `python/README.md`
+- ESP32 guide: `esp32-poe/README.md`
 
 ## TODO
 
-- ESP32 port
 - Pub/Sub on points
 - Niagara WEEP service (Fox service clone)
 - Niagara WEEP Network (Niagara Network clone)

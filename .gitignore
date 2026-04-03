@@ -100,6 +100,7 @@ htmlcov/
 .env
 .env.*
 *.local
+esp32-poe/include/secrets.h
 
 # OS files
 .DS_Store

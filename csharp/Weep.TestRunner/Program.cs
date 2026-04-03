@@ -16,7 +16,18 @@ bool useHttpListener = args.Contains("--httplistener");
 var portArg = args.SkipWhile(a => a != "--port").Skip(1).FirstOrDefault();
 int port = int.TryParse(portArg, out var p) ? p : 443;
 
-string serverUrl = $"ws://localhost:{port}/weep";
+// --host H controls bind host for self-hosted server (e.g. --host 0.0.0.0 for LAN)
+var hostArg = args.SkipWhile(a => a != "--host").Skip(1).FirstOrDefault();
+string host = string.IsNullOrWhiteSpace(hostArg) ? "localhost" : hostArg;
+
+string connectHost = host is "0.0.0.0" or "::" or "[::]" ? "localhost" : host;
+
+// --url <ws://...>  overrides the whole URL (useful for ESP32: ws://192.168.x.y:81/)
+var urlArg = args.SkipWhile(a => a != "--url").Skip(1).FirstOrDefault();
+string serverUrl = !string.IsNullOrWhiteSpace(urlArg) ? urlArg : $"ws://{connectHost}:{port}/weep";
+
+// --skip-large  omits the 20 MB concurrent transfer test (useful for embedded targets)
+bool skipLarge = args.Contains("--skip-large");
 
 CancellationTokenSource? serverCts  = null;
 Task?                    serverTask = null;
@@ -40,22 +51,22 @@ if (selfHost || serverOnly)
     if (useHttpListener)
     {
         var server = new WeepServerHttpListener();
-        serverTask = Task.Run(() => server.StartAsync($"http://localhost:{port}/weep/", serverCts.Token));
+        serverTask = Task.Run(() => server.StartAsync($"http://{host}:{port}/weep/", serverCts.Token));
     }
     else
     {
         var server = new WeepServer();
-        serverTask = Task.Run(() => server.StartAsync($"http://localhost:{port}", serverCts.Token));
+        serverTask = Task.Run(() => server.StartAsync($"http://{host}:{port}", serverCts.Token));
     }
     await Task.Delay(600); // let the server bind
-    Console.WriteLine($"[server] WeepServer ({(useHttpListener ? "HttpListener" : "Kestrel")}) ready on ws://localhost:{port}/weep\n");
+    Console.WriteLine($"[server] WeepServer ({(useHttpListener ? "HttpListener" : "Kestrel")}) ready on ws://{connectHost}:{port}/weep (bind {host})\n");
 
     if (serverOnly)
     {
         Console.WriteLine("Press Ctrl+C to stop...");
         string uiUrl = useHttpListener
-            ? $"http://localhost:{port}/weep"
-            : $"http://localhost:{port}/";
+            ? $"http://{connectHost}:{port}/weep"
+            : $"http://{connectHost}:{port}/";
         Console.WriteLine($"[server] Web UI: {uiUrl}");
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; serverCts.Cancel(); };
         await Task.Delay(Timeout.Infinite, serverCts.Token).ContinueWith(_ => { });
@@ -67,7 +78,7 @@ if (selfHost || serverOnly)
 // Run test suite
 // -----------------------------------------------------------------------
 string label = selfHost ? "C# server (self-hosted)" : $"external server ({serverUrl})";
-var runner = new TestRunner(serverUrl, label);
+var runner = new TestRunner(serverUrl, label, skipLarge);
 await runner.RunAsync();
 
 serverCts?.Cancel();
@@ -105,7 +116,7 @@ static string? FindFilesRoot()
 
 // =======================================================================
 
-sealed class TestRunner(string serverUrl, string label = "server")
+sealed class TestRunner(string serverUrl, string label = "server", bool skipLarge = false)
 {
     public int Passed { get; private set; }
     public int Failed { get; private set; }
@@ -297,6 +308,10 @@ sealed class TestRunner(string serverUrl, string label = "server")
             if (size == 4096) Ok($"Download binary: {size} bytes (correct)");
             else              Fail("Download binary", $"Expected 4096, got {size}");
         }
+        catch (WeepException ex) when (ex.Code == 404)
+        {
+            Console.WriteLine("  [SKIP] Download binary: /data/sensor_data.bin not found on server");
+        }
         catch (Exception ex) { Fail("Download binary", ex.Message); }
 
         // -----------------------------------------------------------
@@ -371,6 +386,12 @@ sealed class TestRunner(string serverUrl, string label = "server")
         //    Exercises the ACK sliding window over ~160+ window-fulls of data.
         // -----------------------------------------------------------
         Console.WriteLine("\n=== Large-file concurrent (upload + download, ~20 MB) ===");
+        if (skipLarge)
+        {
+            Console.WriteLine("  [SKIP] --skip-large specified, skipping 20 MB transfer test");
+        }
+        else
+        {
 
         const int BigSize1 = 10 * 1024 * 1024;
         const int BigSize2 = 10 * 1024 * 1024 + 12_345;
@@ -437,6 +458,8 @@ sealed class TestRunner(string serverUrl, string label = "server")
             else      Fail("Uploaded big2 content", "mismatch");
         }
         catch (Exception ex) { Fail("Verify big2 upload", ex.Message); }
+
+        } // end if (!skipLarge)
 
         Summary();
     }

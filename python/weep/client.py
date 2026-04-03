@@ -296,6 +296,9 @@ class FileTransferClient:
     async def stat(self, path: str) -> dict:
         return await self._rpc({"op": "stat", "path": path})
 
+    async def delete(self, path: str) -> dict:
+        return await self._rpc({"op": "delete", "path": path})
+
     async def upload(self, local_path: str, remote_path: str) -> None:
         local = Path(local_path)
         req_msgno = self._next_msgno()

@@ -37,6 +37,7 @@ public sealed class ServerFileProfile(
             case "download": await BeginDownloadAsync(msgno, payload); break;
             case "list":     await ListAsync(msgno, payload);          break;
             case "stat":     await StatAsync(msgno, payload);          break;
+            case "delete":   await DeleteAsync(msgno, payload);        break;
             default:
                 await sendJson(MessageFactory.Error(channel, msgno, 400, $"Unknown op: {op}"));
                 break;
@@ -163,6 +164,49 @@ public sealed class ServerFileProfile(
             ["channel"] = channel,
             ["msgno"]   = msgno,
             ["payload"] = EntryJson(fsi),
+        }.ToJsonString());
+    }
+
+    // ------------------------------------------------------------------
+    // Delete file or directory (recursive)
+    // ------------------------------------------------------------------
+
+    private async Task DeleteAsync(int msgno, JsonObject payload)
+    {
+        var path = payload["path"]?.GetValue<string>() ?? "";
+        if (string.IsNullOrWhiteSpace(path) || path is "/" or "\\")
+        {
+            await sendJson(MessageFactory.Error(channel, msgno, 400, "path required"));
+            return;
+        }
+
+        var info = ResolvePath(path);
+        var full = info.FullName;
+
+        if (Directory.Exists(full))
+        {
+            Directory.Delete(full, recursive: true);
+        }
+        else if (File.Exists(full))
+        {
+            File.Delete(full);
+        }
+        else
+        {
+            await sendJson(MessageFactory.Error(channel, msgno, 404, $"Not found: {path}"));
+            return;
+        }
+
+        await sendJson(new JsonObject
+        {
+            ["type"]    = MsgType.RPY.ToString(),
+            ["channel"] = channel,
+            ["msgno"]   = msgno,
+            ["payload"] = new JsonObject
+            {
+                ["ok"] = true,
+                ["path"] = path,
+            },
         }.ToJsonString());
     }
 

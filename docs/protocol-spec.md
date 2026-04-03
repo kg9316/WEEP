@@ -1197,6 +1197,7 @@ from server.
 |------|----------------------|---------------------|
 | `"list"`     | `path` (string)                       | `path` (string), `entries` (array) |
 | `"stat"`     | `path` (string)                       | entry object (see 10.4) |
+| `"delete"`   | `path` (string)                       | `ok` (bool), `path` (string) |
 | `"upload"`   | `path`, `size` (int), `mime?` (string) | `transferId` (string), `chunkSize` (int) |
 | `"download"` | `path` (string)                       | `transferId` (string), `size` (int), `mime` (string) |
 
@@ -1262,7 +1263,24 @@ If `path` does not refer to an existing directory, the server returns
                "size":1024, "modified":"2026-04-01T10:00:00Z", "mime":"text/plain" } }
 ```
 
-### 10.7 Upload operation
+### 10.7 Delete operation
+
+```json
+// Request
+{ "type":"MSG", "channel":1, "msgno":6,
+  "payload": { "op":"delete", "path":"/log.txt" } }
+
+// Reply
+{ "type":"RPY", "channel":1, "msgno":6,
+  "payload": { "ok":true, "path":"/log.txt" } }
+```
+
+Servers should support deleting both files and directories. Directory deletes are
+recursive. Deleting `/` is invalid and should return `ERR 400`.
+
+If `path` does not exist, server returns `ERR 404`.
+
+### 10.8 Upload operation
 
 #### Overview
 

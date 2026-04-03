@@ -91,6 +91,14 @@ public sealed class FileTransferClient : IChannelHandler, IAsyncDisposable
         return FileEntry.FromJson(rpy);
     }
 
+    public async Task DeleteAsync(string path,
+                                   CancellationToken ct = default)
+    {
+        var msgno = NextMsgno();
+        await SendAndWaitAsync(msgno,
+            new JsonObject { ["op"] = "delete", ["path"] = path }, ct);
+    }
+
     // ------------------------------------------------------------------
     // Upload  (request=JSON, data=binary)
     // ------------------------------------------------------------------

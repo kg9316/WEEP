@@ -3,6 +3,8 @@ import asyncio
 import json
 import os
 import mimetypes
+import socket
+import shutil
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,6 +74,9 @@ class FileProfile:
             return
         if op == "download":
             await self._begin_download(msgno, str(payload.get("path", "")))
+            return
+        if op == "delete":
+            await self._delete(msgno, str(payload.get("path", "")))
             return
         await self._session.send_json(msg_err(self._channel, msgno, 400, f"Unknown op: {op}"))
 
@@ -210,6 +215,32 @@ class FileProfile:
             )
         )
         asyncio.create_task(self._stream_file(path))
+
+    async def _delete(self, msgno: int, virtual_path: str) -> None:
+        if not virtual_path or virtual_path in {"/", "\\"}:
+            await self._session.send_json(msg_err(self._channel, msgno, 400, "path required"))
+            return
+
+        path = self._resolve(virtual_path)
+        if not path.exists():
+            await self._session.send_json(msg_err(self._channel, msgno, 404, f"Not found: {virtual_path}"))
+            return
+
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+        await self._session.send_json(
+            dumps(
+                {
+                    "type": "RPY",
+                    "channel": self._channel,
+                    "msgno": msgno,
+                    "payload": {"ok": True, "path": virtual_path},
+                }
+            )
+        )
 
     async def _stream_file(self, path: Path) -> None:
         window = SendWindow(8)
@@ -543,7 +574,11 @@ class WeepServer:
         self.host = host
         self.port = port
         self.require_auth = require_auth
-        self.files_dir = Path(files_dir)
+        files_path = Path(files_dir)
+        if not files_path.is_absolute():
+            repo_root = Path(__file__).resolve().parents[2]
+            files_path = repo_root / files_path
+        self.files_dir = files_path
         self.enable_mdns_discovery = True
         self.discovery_instance_name: str | None = None
         self.user_store = UserStore()
@@ -558,7 +593,29 @@ class WeepServer:
         async def process_request(path: str, request_headers: Any):
             if path == "/weep/discover":
                 discovered = await discover_services(timeout=1.5)
-                body = json.dumps([d.to_dict() for d in discovered]).encode("utf-8")
+                items = [d.to_dict() for d in discovered]
+                wildcard_hosts = {"0.0.0.0", "::", "[::]", ""}
+                if self.host in wildcard_hosts:
+                    local_addrs = sorted({
+                        addr[4][0]
+                        for addr in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+                    })
+                else:
+                    local_addrs = [self.host]
+                connect_host = local_addrs[0] if local_addrs else "localhost"
+                self_item = {
+                    "instanceName": self.discovery_instance_name or f"{os.getenv('COMPUTERNAME', os.getenv('HOSTNAME', 'python'))}-weep",
+                    "hostName": socket.gethostname(),
+                    "port": self.port,
+                    "path": "/weep",
+                    "version": "1.2",
+                    "authMechanisms": ["auth:scram-sha256"],
+                    "addresses": local_addrs,
+                    "wsUrl": f"ws://{connect_host}:{self.port}/weep",
+                }
+                if not any((it.get("port") == self.port and it.get("path") == "/weep") for it in items):
+                    items.append(self_item)
+                body = json.dumps(items).encode("utf-8")
                 return 200, [
                     ("Content-Type", "application/json; charset=utf-8"),
                     ("Cache-Control", "no-cache"),
@@ -568,7 +625,8 @@ class WeepServer:
                 # Serve the browser UI for plain GET; let WebSocket upgrades through.
                 upgrade = str(request_headers.get("Upgrade", "")).lower()
                 if upgrade != "websocket":
-                    html_path = Path("js") / "index.html"
+                    repo_root = Path(__file__).resolve().parents[2]
+                    html_path = repo_root / "js" / "index.html"
                     if html_path.exists():
                         body = html_path.read_bytes()
                         return 200, [

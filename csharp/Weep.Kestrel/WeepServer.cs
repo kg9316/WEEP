@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Weep.Discovery;
@@ -30,6 +31,29 @@ public sealed class WeepServer
     private WebApplication? _app;
     private WeepMdnsAdvertiser? _mdnsAdvertiser;
 
+    private static string ResolveRepoRoot()
+    {
+        var roots = new[]
+        {
+            new DirectoryInfo(Environment.CurrentDirectory),
+            new DirectoryInfo(AppContext.BaseDirectory),
+        };
+
+        foreach (var start in roots)
+        {
+            var dir = start;
+            for (int i = 0; i < 12 && dir != null; i++, dir = dir.Parent)
+            {
+                var hasFiles = Directory.Exists(Path.Combine(dir.FullName, "files"));
+                var hasJs = File.Exists(Path.Combine(dir.FullName, "js", "index.html"));
+                if (hasFiles && hasJs)
+                    return dir.FullName;
+            }
+        }
+
+        return Environment.CurrentDirectory;
+    }
+
     // ------------------------------------------------------------------
     // Start
     // ------------------------------------------------------------------
@@ -42,6 +66,10 @@ public sealed class WeepServer
         UserStore.AddUser("guest", "guest", "read");
 
         var builder = WebApplication.CreateBuilder();
+        var repoRoot = ResolveRepoRoot();
+        var htmlFile = Path.Combine(repoRoot, "js", "index.html");
+        var filesRoot = Path.Combine(repoRoot, "files");
+        Directory.CreateDirectory(filesRoot);
 
         // Suppress ASP.NET Core startup banner and reduce log noise
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
@@ -67,7 +95,27 @@ public sealed class WeepServer
                 authMechanisms = s.AuthMechanisms,
                 addresses = s.Addresses,
                 wsUrl = s.BuildWebSocketUrl(),
-            });
+            }).ToList();
+
+            if (!payload.Any(s => s.port == new Uri(url).Port && s.path == "/weep"))
+            {
+                var selfAddresses = Dns.GetHostAddresses(Dns.GetHostName())
+                    .Where(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                    .Select(ip => ip.ToString())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                payload.Add(new
+                {
+                    instanceName = (DiscoveryInstanceName ?? $"{Environment.MachineName}-weep") + "._weep._tcp.local",
+                    hostName = Environment.MachineName,
+                    port = new Uri(url).Port,
+                    path = "/weep",
+                    version = "1.2",
+                    authMechanisms = (IReadOnlyList<string>)new[] { "auth:scram-sha256" },
+                    addresses = (IReadOnlyList<string>)selfAddresses,
+                    wsUrl = $"ws://{(selfAddresses.FirstOrDefault() ?? "localhost")}:{new Uri(url).Port}/weep",
+                });
+            }
 
             var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
             ctx.Response.ContentType = "application/json; charset=utf-8";
@@ -82,7 +130,6 @@ public sealed class WeepServer
             if (!ctx.WebSockets.IsWebSocketRequest)
             {
                 // Serve the browser UI
-                var htmlFile = Path.Combine(Directory.GetCurrentDirectory(), "js", "index.html");
                 if (!File.Exists(htmlFile))
                 {
                     ctx.Response.StatusCode = 404;
@@ -101,7 +148,7 @@ public sealed class WeepServer
             Console.WriteLine($"[weep] Connected: {remote}");
 
             var ws      = await ctx.WebSockets.AcceptWebSocketAsync();
-            var session = new ServerSession(ws, UserStore, RequireAuth);
+            var session = new ServerSession(ws, UserStore, RequireAuth, filesRoot);
             try
             {
                 await session.RunAsync(ctx.RequestAborted);
