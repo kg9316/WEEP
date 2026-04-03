@@ -2,6 +2,8 @@
 
 WEEP (WebSocket Event Exchange Protocol) is a multiplexed protocol for running multiple logical channels over one WebSocket connection.
 
+WEEP runs on **.NET**, **Python**, and **ESP32** (Arduino/PlatformIO) with full interoperability between implementations. A C# client can connect to a Python server or an ESP32 — auth, file transfer, multi-channel, and discovery all work across the stack.
+
 WEEP is designed with two primary priorities:
 
 - **Security first**: SCRAM-based authentication, TLS-ready deployment (`wss://`), and explicit auth before profile channels open.
@@ -17,12 +19,22 @@ Some parts of this project were refined during Easter holiday vibe-coding.
 If you find an unusually clean queue implementation, that was probably coffee.
 If you find a weird edge case already handled, that was probably chocolate.
 
+## Implementations
+
+| Platform | Server | Client | Auth | File | Query | mDNS |
+|---|---|---|---|---|---|---|
+| **.NET** (C#) | ✅ Kestrel + HttpListener | ✅ | SCRAM-SHA256 | ✅ | ✅ | ✅ |
+| **Python** | ✅ `asyncio` + `websockets` | ✅ | SCRAM-SHA256 | ✅ | ✅ | ✅ |
+| **ESP32** (Arduino) | ✅ `WebSocketsServer` | — | SCRAM-SHA256 | ✅ SD_MMC | ✅ | ✅ |
+
+All implementations are **interoperable**: any client can connect to any server. The C# test runner can target an ESP32 at `ws://192.168.x.y:81/` and all tests pass.
+
 This repository includes:
 
 - C# reference implementation (server, client, examples)
 - Python port (server, client, compatibility tests)
-- Browser UI for testing file/query workflows
-- ESP32-POE implementation (SCRAM auth, file/query profiles, mDNS discovery)
+- ESP32-POE implementation (SCRAM auth, file/query profiles, mDNS discovery, SD card storage)
+- Browser UI served by all three implementations
 - LAN discovery with mDNS/DNS-SD and an HTTP discovery API
 
 ## Background: BEEP and FOX
@@ -87,6 +99,24 @@ Endpoints:
 - Web UI: `http://localhost:9566/weep`
 - Discovery API: `http://localhost:9566/weep/discover`
 - WebSocket endpoint: `ws://localhost:9566/weep`
+
+## Quick start (ESP32)
+
+See `esp32-poe/README.md` for full setup. In brief:
+
+1. Copy `esp32-poe/include/secrets.example.h` → `secrets.h` and fill in your WiFi credentials
+2. Build and flash firmware + SPIFFS: `pio run -t upload && pio run -t uploadfs`
+3. Use the C# test runner to verify:
+
+```powershell
+dotnet run --project csharp/Weep.TestRunner -- --url ws://<ESP32_IP>:81/ --skip-large
+```
+
+Endpoints (replace with actual IP):
+
+- Web UI: `http://<ESP32_IP>/weep`
+- Discovery API: `http://<ESP32_IP>/weep/discover`
+- WebSocket endpoint: `ws://<ESP32_IP>:81/`
 
 ## Documentation
 
