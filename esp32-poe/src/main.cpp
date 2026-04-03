@@ -23,7 +23,7 @@ static const char* DEMO_PASS = "admin";
 static const uint8_t FRAME_FLAG_FINAL = 0x01;
 static const uint8_t FRAME_FLAG_ACK = 0x02;
 static const size_t FRAME_HEADER_SIZE = 7;
-static const size_t SERVER_CHUNK_SIZE = 4096;
+static const size_t SERVER_CHUNK_SIZE = 8192;
 
 struct UploadState
 {
