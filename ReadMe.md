@@ -29,6 +29,14 @@ If you find a weird edge case already handled, that was probably chocolate.
 
 All implementations are **interoperable**: any client can connect to any server. The C# test runner can target an ESP32 at `ws://192.168.x.y:81/` and all tests pass.
 
+## Built-in test page
+
+Every server (C#, Python, and ESP32) serves a built-in browser UI at `/weep`. It provides a live view of the `weep:file` and `weep:query` profiles, lets you browse, upload, download, and delete files on the server's storage, run query strings, and watch mDNS-discovered services on the LAN — all over a single multiplexed WebSocket connection.
+
+![WEEP File Browser UI connected to ESP32](docs/screenshot.png)
+
+*Screenshot: browser UI connected directly to an ESP32-POE (`ws://192.168.1.162:81`), showing SD card contents alongside the query channel.*
+
 This repository includes:
 
 - C# reference implementation (server, client, examples)
