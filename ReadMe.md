@@ -128,5 +128,6 @@ Endpoints (replace with actual IP):
 ## TODO
 
 - Pub/Sub on points
+- Esp32 Client
 - Niagara WEEP service (Fox service clone)
 - Niagara WEEP Network (Niagara Network clone)
